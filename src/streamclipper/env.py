@@ -153,6 +153,8 @@ def ensure_bundled_assets(capcut_local: Path, install: bool = True) -> dict:
         )
 
     fonts_dir = TEMPLATE_DIR / "fonts"
+    if install and capcut_installed and sys.platform == "win32":
+        install_user_fonts(fonts_dir)
     installed_fonts = {}
     for fkey, fname in FONT_FILES.items():
         fpath = fonts_dir / fname
@@ -176,6 +178,45 @@ def ensure_bundled_assets(capcut_local: Path, install: bool = True) -> dict:
         "sfx": installed_sfx,
         "sources": sources,
     }
+
+
+def install_user_fonts(fonts_dir: Path) -> int:
+    """
+    Windows only (no admin required): install bundled TTF fonts into %LOCALAPPDATA%\\Microsoft\\Windows\\Fonts
+    and register them in HKCU so CapCut Desktop resolves every bundled font by name and path instead of
+    falling back to Classic. Non-fatal on any OS/registry error; returns number of newly installed fonts.
+    """
+    if sys.platform != "win32" or not Path(fonts_dir).is_dir():
+        return 0
+    win_fonts = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local")) / "Microsoft/Windows/Fonts"
+    added = 0
+    try:
+        win_fonts.mkdir(parents=True, exist_ok=True)
+        import ctypes
+        import winreg
+
+        gdi32 = ctypes.windll.gdi32
+        reg_path = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, reg_path) as key:
+            for fname in FONT_FILES.values():
+                src = Path(fonts_dir) / fname
+                if not src.is_file():
+                    continue
+                dst = win_fonts / fname
+                if not dst.is_file() or dst.stat().st_size != src.stat().st_size:
+                    shutil.copy2(src, dst)
+                    gdi32.AddFontResourceW(str(dst))
+                    added += 1
+                label = (ttf_full_name(src) or src.stem) + " (TrueType)"
+                try:
+                    cur, _ = winreg.QueryValueEx(key, label)
+                except FileNotFoundError:
+                    cur = ""
+                if cur != str(dst):
+                    winreg.SetValueEx(key, label, 0, winreg.REG_SZ, str(dst))
+    except OSError:
+        return added
+    return added
 
 
 def find_font_fallback(capcut_local: Path) -> str:

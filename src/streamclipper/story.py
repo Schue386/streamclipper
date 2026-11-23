@@ -267,6 +267,34 @@ CATEGORY_HOOKS = {
 }
 DEFAULT_HOOKS = ("HE DID NOT SEE THAT COMING", "WAIT FOR IT...", "WATCH WHAT HAPPENS")
 
+HINGLISH_CATEGORY_HOOKS = {
+    "funny": ("BHAI YE KYA HO GAYA", "HASI NAHI RUK RAHI", "SCENE OUT OF CONTROL"),
+    "rage": ("BHAI KA DIMAG KHARAB", "GAME NE TOD DIYA", "FULL RAGE MODE"),
+    "clutch": ("INSANE CLUTCH BHAI", "NO WAY YE HO GAYA", "CLUTCH OF THE STREAM"),
+    "reaction": ("END TAK DEKHO", "REACTION DEKHO BHAI", "YE KYA DEKH LIYA"),
+    "fail": ("GAYA YE TOH", "SABSE BURA TIMING", "ITNA CLOSE THA BHAI"),
+    "hot take": ("YE KYA BOL DIYA", "UNFILTERED TAKE"),
+    "reveal": ("END TAK RUKO", "KISI NE EXPECT NAHI KIYA"),
+    "wholesome": ("DIL JEET LIYA", "WHOLESOME MOMENT"),
+    "chaos": ("PURE CHAOS HO GAYA", "SAB EK SAATH BIGAD GAYA"),
+}
+HINGLISH_DEFAULT_HOOKS = ("END TAK DEKHO", "BHAI YE KYA HO GAYA", "WAIT FOR IT...")
+_HINGLISH_MARKERS = {"bhai", "kya", "yaar", "arre", "abey", "dekho", "gaya", "nahi", "hain", "hai", "bhaag", "bhag"}
+
+
+def _looks_hindi_or_hinglish(words: list) -> bool:
+    """True when the transcript words contain Devanagari/Urdu or >= 2 common Hinglish markers."""
+    hits = 0
+    for w in words or []:
+        t = str(w.get("w") or "")
+        if any(0x0900 <= ord(ch) <= 0x097F or 0x0600 <= ord(ch) <= 0x06FF for ch in t):
+            return True
+        if _bare(t) in _HINGLISH_MARKERS:
+            hits += 1
+            if hits >= 2:
+                return True
+    return False
+
 
 def _bare(w: str) -> str:
     return str(w).lower().strip(".,!?;:\"'()[]-…")
@@ -315,11 +343,13 @@ def hook_complete(toks: list, edge_start: bool = True, edge_end: bool = True) ->
     return content >= 2 or (content >= 1 and last.endswith(SENTENCE_END))
 
 
-def category_hook(category: str = None, seed: float = 0.0, exclude=()) -> str:
+def category_hook(category: str = None, seed: float = 0.0, exclude=(), hinglish: bool = False) -> str:
     """A generic hook (last resort): the category's list first, then every other one; never one in exclude."""
-    opts = CATEGORY_HOOKS.get(str(category or ""), DEFAULT_HOOKS)
+    table = HINGLISH_CATEGORY_HOOKS if hinglish else CATEGORY_HOOKS
+    defaults = HINGLISH_DEFAULT_HOOKS if hinglish else DEFAULT_HOOKS
+    opts = table.get(str(category or ""), defaults)
     k = int(abs(seed) * 10) % len(opts)
-    pool = list(opts[k:] + opts[:k]) + [h for hs in (DEFAULT_HOOKS, *CATEGORY_HOOKS.values()) for h in hs]
+    pool = list(opts[k:] + opts[:k]) + [h for hs in (defaults, *table.values()) for h in hs]
     return next((h for h in pool if h not in exclude), "")
 
 
@@ -388,7 +418,7 @@ def suggest_hook(words: list, win: dict, category: str = None, exclude=()) -> st
                 best = (score, text)
     if best and (best[0] >= 2.0 or exclude):
         return _hook_case(best[1])
-    hook = category_hook(category, p, exclude)
+    hook = category_hook(category, p, exclude, hinglish=_looks_hindi_or_hinglish(words))
     if hook:
         return _hook_case(hook)
     kws = [_bare(w["w"]) for w in sorted(zone, key=lambda w: -len(_bare(w["w"]))) if len(_bare(w["w"])) > 3]

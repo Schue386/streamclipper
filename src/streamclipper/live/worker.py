@@ -10,6 +10,7 @@ from streamclipper.commands import _link_outputs, make_stream_clip, save_clips
 from streamclipper.discovery import clips_document
 from streamclipper.gate import render_and_gate
 from streamclipper.live.engine import shift_clip
+from streamclipper.live.notify import send_clip_alert
 from streamclipper.story import suggest_hook
 from streamclipper.util import SkipClip, ToolError, fwd
 
@@ -34,6 +35,7 @@ class Worker:
         hook_override: str = "",
         llm: str = "none",
         llm_model: str = "",
+        webhook: str = "",
         make_clip=make_stream_clip,
         render_fn=render_and_gate,
         moment_lock=None,
@@ -42,7 +44,7 @@ class Worker:
         self.opts, self.assets, self.doc_info = opts, assets, doc_info
         self.render, self.no_draft, self.portable, self.draft_root = render, no_draft, portable, draft_root
         self.prefix, self.hook_override = prefix, hook_override
-        self.llm, self.llm_model = llm, llm_model
+        self.llm, self.llm_model, self.webhook = llm, llm_model, webhook
         self.make_clip, self.render_fn = make_clip, render_fn
         self.mlock = moment_lock or threading.Lock()  # the engine's lock: it replaces only unstarted moments
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="live-render")
@@ -114,11 +116,13 @@ class Worker:
         from streamclipper.llm import analyze_transcript
 
         try:
+            lang_fn = self.doc_info.get("language_fn")
+            lang = (lang_fn() if callable(lang_fn) else None) or self.doc_info.get("language") or "en"
             segs = analyze_transcript(
                 clip["words"],
                 self.llm,
                 self.llm_model,
-                self.doc_info.get("language") or "en",
+                lang,
                 None,
                 self.out / "llm" / f"clip_{n:02d}",
             )
@@ -159,6 +163,8 @@ class Worker:
                 draft_root=self.draft_root,
                 no_draft=self.no_draft,
                 portable=self.portable,
+                llm=self.llm,
+                llm_model=self.llm_model,
             )
             self._last_plan = plan
             if local.get("caption_style"):  # the style make_stream_clip picked (auto = from the category)
@@ -189,15 +195,19 @@ class Worker:
             f"CLIP {entry['rank']:02d} | {_mmss(clip['peak'])} into stream | score {clip['score']} | "
             f"'{entry['title']}' | {where} | ready {latency:.0f} s after the moment{gate}"
         )
+        if self.webhook:
+            send_clip_alert(self.webhook, entry, channel=self.doc_info.get("title") or "", where=where)
         return entry
 
     def write_doc(self) -> dict:
         info = self.doc_info
+        lang_fn = info.get("language_fn")
+        lang = (lang_fn() if callable(lang_fn) else None) or info.get("language") or "auto"
         res = {
             "clips": self.clips,
             "duration": info["duration"](),
             "transcribed": info["transcribed"],
-            "language": info.get("language") or "auto",
+            "language": lang,
             "elapsed": round(time.time() - info["t_start"], 1),
             "asr": info.get("asr", "none"),
             "llm": info.get("llm", "none"),

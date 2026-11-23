@@ -8,8 +8,11 @@ a dramatic pause are left alone.
 import re
 
 FILLER_WORDS = {"um", "uh", "uhh", "umm", "erm", "er", "hmm"}
+# Context-gated fillers (English + Hinglish): only cut when followed by a comma or between pauses.
+PAUSE_GATED_FILLERS = {"matlab"}
 # 'like' after these is a verb or part of a phrase ('I like', 'looks like', 'feel like'), never a filler
 LIKE_KEEP_AFTER = {"i", "you", "we", "they", "would", "look", "looks", "feel", "feels", "just"}
+MATLAB_KEEP_AFTER = {"iska", "uska", "kya", "koi", "mera", "tera", "apna"}
 YOU_KNOW_KEEP_AFTER = {"do", "did", "don't", "dont", "if"}
 EDGE = 0.02  # a cut starts at least this long after the previous word and ends this long before the next
 PAD = 0.12  # ... and takes at most this much of the pause on each side (longer pauses keep their beat)
@@ -45,6 +48,10 @@ def _filler_runs(words: list) -> list:
         if n in FILLER_WORDS:
             runs.append((i, i))
         elif n == "like" and prev not in LIKE_KEEP_AFTER:
+            between_pauses = _gap_before(words, i) >= LIKE_PAUSE and _gap_after(words, i) >= LIKE_PAUSE
+            if raw.endswith(",") or between_pauses:
+                runs.append((i, i))
+        elif n in PAUSE_GATED_FILLERS and prev not in MATLAB_KEEP_AFTER:
             between_pauses = _gap_before(words, i) >= LIKE_PAUSE and _gap_after(words, i) >= LIKE_PAUSE
             if raw.endswith(",") or between_pauses:
                 runs.append((i, i))

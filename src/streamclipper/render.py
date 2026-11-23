@@ -11,7 +11,7 @@ from streamclipper.audio import measure_loudness
 from streamclipper.brand import HANDLE_SIZE, card_seconds, load_brand_kit, plan_brand
 from streamclipper.captions.ass import _ass_escape, _ass_time, build_ass
 from streamclipper.captions.coverage import spoken_words_tl
-from streamclipper.captions.styles import FONT_FILES
+from streamclipper.captions.styles import FONT_FILES, is_profane
 from streamclipper.effects import ENHANCE_MIX, effects_of, perspective_filter, zoom_plan_for
 from streamclipper.env import _first_line, ttf_full_name
 from streamclipper.layout import apply_caption_anchor, layout_boxes, probe_video
@@ -261,6 +261,67 @@ def loudness_measure(cmd_inputs: list, graph: str, cwd: Path, frames: bool = Fal
     return li, tp, m
 
 
+def bleep_spans(plan: dict) -> list:
+    """Timeline [(s, e)] spans of profane spoken words when --profanity-filter is enabled (merged if overlapping)."""
+    if not (plan.get("caption_opts") or {}).get("profanity_filter"):
+        return []
+    spans = []
+    for w, s, e in spoken_words_tl(plan):
+        if not is_profane(w):
+            continue
+        a = max(0.0, round(float(s) - 0.02, 3))
+        b = round(max(float(e) + 0.03, a + 0.14), 3)
+        if spans and a <= spans[-1][1] + 0.04:
+            spans[-1] = (spans[-1][0], max(spans[-1][1], b))
+        else:
+            spans.append((a, b))
+    return spans
+
+
+def _bleep_chain(src_label: str, spans: list, dur: float) -> tuple[list, str]:
+    """Mute `src_label` on `spans` and mix in a clean 1 kHz censor bleep on those exact timestamps."""
+    expr = "+".join(f"between(t,{a:.3f},{b:.3f})" for a, b in spans)
+    lines = [
+        f"{src_label}volume=0:enable='{expr}'[abm]",
+        f"sine=frequency=1000:sample_rate=48000:duration={dur + 0.2:.3f},"
+        f"aformat=sample_rates=48000:channel_layouts=stereo,"
+        f"volume='if({expr},0.18,0)':eval=frame[abtone]",
+        "[abm][abtone]amix=inputs=2:normalize=0:duration=first[ablp]",
+    ]
+    return lines, "[ablp]"
+
+
+def _bgm_duck_chain(voice_label: str, bgm_idx: int, volume: float, dur: float) -> tuple[list, str]:
+    """Mix looped background music under `voice_label` with sidechain auto-ducking (dips when streamer speaks)."""
+    fade_st = max(0.0, dur - 1.0)
+    lines = [
+        f"{voice_label}asplit=2[vmain][vsc]",
+        f"[{bgm_idx}:a]aformat=sample_rates=48000:channel_layouts=stereo,"
+        f"atrim=duration={dur + 0.1:.3f},asetpts=PTS-STARTPTS,"
+        f"afade=t=out:st={fade_st:.3f}:d=1.0,volume={volume:.3f}[bgm0]",
+        "[bgm0][vsc]sidechaincompress=threshold=0.03:ratio=5:attack=40:release=350:makeup=1[bgmduck]",
+        "[vmain][bgmduck]amix=inputs=2:normalize=0:duration=first[abgm]",
+    ]
+    return lines, "[abgm]"
+
+
+def _finish_audio_mix(
+    src_label: str, mix: list, bleeps: list, bgm_idx, bgm_vol: float, dur: float
+) -> tuple[list, str]:
+    """Apply optional profanity bleep, SFX mix and auto-ducked BGM consistently across Pass 1 and Pass 2."""
+    g, cur = [], src_label
+    if bleeps:
+        blines, cur = _bleep_chain(cur, bleeps, dur)
+        g += blines
+    if mix:
+        g.append(f"{cur}{''.join(mix)}amix=inputs={1 + len(mix)}:normalize=0:duration=first[amx]")
+        cur = "[amx]"
+    if bgm_idx is not None:
+        dlines, cur = _bgm_duck_chain(cur, bgm_idx, bgm_vol, dur)
+        g += dlines
+    return g, cur
+
+
 def render_plan_mp4(plan: dict, out_mp4: Path) -> Path:
     """
     ClipPlan -> ready-to-post MP4 (1080x1920 or 1080x1080, 30 fps, H.264 High, AAC 48 kHz,
@@ -377,22 +438,26 @@ def render_plan_mp4(plan: dict, out_mp4: Path) -> Path:
     sfx_inputs = []
     for e in sfx:
         sfx_inputs += ["-i", str(Path(e["source"]))]
+    bgm_cfg = plan.get("bgm") or {}
+    bgm_src = Path(bgm_cfg["source"]) if bgm_cfg.get("source") and Path(bgm_cfg["source"]).is_file() else None
+    bgm_vol = max(0.02, min(0.60, float(bgm_cfg.get("volume") or 0.14)))
+    bgm_inputs = ["-stream_loop", "-1", "-i", str(bgm_src)] if bgm_src else []
 
     has_audio = mmeta["has_audio"]
+    bleeps = bleep_spans(plan) if has_audio else []
 
-    def mix_tail(labels, mix):
+    def mix_tail(labels, mix, bgm_idx=None):
         cat = "".join(labels[i] for i in range(len(segs)))
         g = [f"{cat}concat=n={len(segs)}:v=0:a=1[acat]"]
-        if mix:
-            g.append(f"[acat]{''.join(mix)}amix=inputs={1 + len(mix)}:normalize=0:duration=first[amx]")
-            return g, "[amx]"
-        return g, "[acat]"
+        extra, cur = _finish_audio_mix("[acat]", mix, bleeps, bgm_idx, bgm_vol, total)
+        return g + extra, cur
 
-    # Pass 1: audio only, main lanes + SFX
+    # Pass 1: audio only, main lanes + SFX + optional auto-ducked BGM
     p1_inputs, p1_idx = [], {}
     for L in range(len(lanes)):
         p1_inputs += lane_input(L, main)
         p1_idx[L] = L
+    p1_bgm_idx = (len(lanes) + len(sfx)) if bgm_src else None
     voice_lufs = None
     if has_audio and sfx:
         # SFX at least 6 dB under the voice: cap each event by its file loudness vs the voice lane
@@ -401,7 +466,8 @@ def render_plan_mp4(plan: dict, out_mp4: Path) -> Path:
         voice_lufs, _ = loudness_measure(p1_inputs, ";\n".join(ag0 + tail0 + [f"{alab0}ebur128=peak=true[aout]"]), rdir)
         sfx = [dict(e, volume=sfx_volume_cap(e["volume"], voice_lufs, _sfx_lufs(e["source"]))) for e in sfx]
     ag, labels, mix = _audio_graph(lanes, segs, p1_idx, has_audio, sfx, len(lanes), enh)
-    tail, alab = mix_tail(labels, mix)
+    tail, alab = mix_tail(labels, mix, p1_bgm_idx)
+    p1_all_inputs = p1_inputs + sfx_inputs + bgm_inputs
     # Loudness: measure the mix, then gain (+ compressor stage) + limiter, re-measured until within
     # 0.3 LU of -11 LUFS. (Two-pass loudnorm cannot stay linear at -11 LUFS / -1.5 dBTP on stream audio
     # and its dynamic fallback lands around -13.7 LUFS with peaks near 0 dBTP, so it is not used.)
@@ -412,7 +478,7 @@ def render_plan_mp4(plan: dict, out_mp4: Path) -> Path:
         gain, measured = 0.0, []
         for _ in range(6):
             li, tp = loudness_measure(
-                p1_inputs + sfx_inputs,
+                p1_all_inputs,
                 ";\n".join(ag + tail + [f"{alab}volume={gain:.2f}dB,{comp}{lim},ebur128=peak=true[aout]"]),
                 rdir,
             )
@@ -432,7 +498,7 @@ def render_plan_mp4(plan: dict, out_mp4: Path) -> Path:
 
     def meter(chain: str) -> tuple:
         return loudness_measure(
-            p1_inputs + sfx_inputs, ";\n".join(ag + tail + [f"{alab}{chain}ebur128=peak=true[aout]"]), rdir, True
+            p1_all_inputs, ";\n".join(ag + tail + [f"{alab}{chain}ebur128=peak=true[aout]"]), rdir, True
         )
 
     gain, measured, stage, staging, comp = 0.0, [], 0, None, ""
@@ -478,7 +544,7 @@ def render_plan_mp4(plan: dict, out_mp4: Path) -> Path:
             # AAC adds inter-sample overshoot on hard-limited audio: check the encoded peak once
             enc = rdir / "aac_check.m4a"
             loudness_measure(
-                p1_inputs + sfx_inputs,
+                p1_all_inputs,
                 ";\n".join(ag + tail + [f"{alab}volume={gain:.2f}dB,{comp}{lim},aresample=48000[aout]"]),
                 rdir,
                 encode=enc,
@@ -529,11 +595,9 @@ def render_plan_mp4(plan: dict, out_mp4: Path) -> Path:
         g.append(f"[mcat0]{z_main}[mcat]")
     if z_ov:
         g.append(f"[ocat0]{z_ov}[ocat]")
-    if mix:
-        g.append(f"[acat]{''.join(mix)}amix=inputs={1 + len(mix)}:normalize=0:duration=first[amx]")
-        alab = "[amx]"
-    else:
-        alab = "[acat]"
+    p2_bgm_idx = (n_in + len(sfx)) if bgm_src else None
+    mix_extra, alab = _finish_audio_mix("[acat]", mix, bleeps, p2_bgm_idx, bgm_vol, total)
+    g += mix_extra
     intro_n, outro_n = (int(round(s * fps)) for s in card_seconds(kit))
     cards = bool(intro_n or outro_n)
     g.append(f"{alab}{ln2}" + ("[abody]" if cards else "[aout]"))
@@ -554,8 +618,9 @@ def render_plan_mp4(plan: dict, out_mp4: Path) -> Path:
     if kit is None:
         g.append("[stk]ass=clip.ass:fontsdir=../_fonts,format=yuv420p[vout]")
     else:
+        brand_idx0 = n_in + len(sfx) + (1 if bgm_src else 0)
         brand_info, brand_inputs = _brand_graph(
-            g, kit, plan, lay, cap_info, total, (intro_n, outro_n), rdir, n_in + len(sfx), stacked
+            g, kit, plan, lay, cap_info, total, (intro_n, outro_n), rdir, brand_idx0, stacked
         )
     gfile = rdir / "graph.txt"
     gfile.write_text(";\n".join(g), encoding="utf-8")
@@ -572,6 +637,7 @@ def render_plan_mp4(plan: dict, out_mp4: Path) -> Path:
             "error",
             *inputs,
             *sfx_inputs,
+            *bgm_inputs,
             *brand_inputs,
             *_graph_args(gfile.name),
             "-map",

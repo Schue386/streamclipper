@@ -97,8 +97,8 @@ class Moment:
 class LiveASR:
     """Whisper per segment with OVERLAP_S of the previous segment in front (model loaded once)."""
 
-    def __init__(self, model_name: str = "auto", device: str = "auto", language: str = None):
-        self.model_name, self.device = model_name or "auto", device or "auto"
+    def __init__(self, model_name: str = "auto", device: str = "auto", language: str = None, task: str = "transcribe"):
+        self.model_name, self.device, self.task = model_name or "auto", device or "auto", task or "transcribe"
         self.language = None if not language or language == "auto" else language
         self.w = None
         self.tail = None
@@ -151,7 +151,7 @@ class LiveASR:
         self.tail = cur[-int(OVERLAP_S * SR) :] if len(cur) else tail
         if len(audio) < SR // 2:
             return [], seg.start
-        got, lang = w.run(audio, self.language)
+        got, lang = w.run(audio, self.language, task=self.task)
         if lang:
             self.langs.append(lang)
         words = [{**x, "s": round(t0 + x["s"], 3), "e": round(t0 + x["e"], 3)} for x in got]

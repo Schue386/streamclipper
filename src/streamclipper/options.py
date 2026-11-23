@@ -1,5 +1,6 @@
 """Presets and option resolution (CLI > spec > preset > defaults)."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -22,7 +23,20 @@ from streamclipper.paths import PRESET_DIR
 from streamclipper.util import SkipClip, ToolError, box_to_norm, parse_box, parse_time
 from streamclipper.vision import classify_layout, face_crop_region, person_box
 
-PRESET_ALIASES = {"gta6-streamer-9x16": "streamer-split-9x16", "hormozi-caption-punch": "caption-punch-9x16"}
+PRESET_ALIASES = {
+    "gta6-streamer-9x16": "streamer-split-9x16",
+    "hormozi-caption-punch": "caption-punch-9x16",
+    "indian-streamer-9x16": "hinglish-streamer-9x16",
+}
+
+
+PACE_PRESETS = {"fast": 0.28, "normal": 0.55, "chill": 0.95}
+
+
+def pace_min_pause(pace: str, fallback: float = 0.55) -> float:
+    """Resolve --pace (fast|normal|chill) to a pause-trim threshold in seconds."""
+    key = str(pace or "").strip().lower()
+    return PACE_PRESETS.get(key, float(fallback))
 
 
 OPT_CHOICES = {
@@ -32,6 +46,7 @@ OPT_CHOICES = {
     "caption_mode": ("hormozi-pop", "two-line-stack", "karaoke-word"),
     "font": CAPTION_FONTS,
     "hindi_script": ("devanagari", "roman"),
+    "pace": ("",) + tuple(PACE_PRESETS),
     "caption_case": ("",) + CAPTION_CASES,
     "caption_position": CAPTION_POSITIONS,
     "highlight_color": ("",) + HIGHLIGHT_COLOURS,
@@ -54,6 +69,28 @@ CAPTION_DEFAULTS = {
 _LEGACY_CAPTION_MODES = {"hormozi-pop": "bold-pop", "karaoke-word": "karaoke-highlight"}
 
 
+AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
+
+
+def resolve_bgm(path_str: str, seed: str = "") -> str:
+    """Resolve a --bgm file or folder of audio tracks to one concrete audio file path (deterministic per seed)."""
+    if not path_str:
+        return ""
+    p = Path(path_str).resolve()
+    if p.is_file():
+        return str(p)
+    if p.is_dir():
+        tracks = sorted(f for f in p.iterdir() if f.is_file() and f.suffix.lower() in AUDIO_EXTS)
+        if not tracks:
+            raise ToolError(
+                f"No audio files found in BGM folder: {p}",
+                f"add at least one audio file ({', '.join(sorted(AUDIO_EXTS))}) or pass a single file",
+            )
+        idx = int(hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8], 16) % len(tracks) if seed else 0
+        return str(tracks[idx].resolve())
+    raise ToolError(f"BGM file or folder not found: {path_str}", "check the --bgm path")
+
+
 DEFAULT_OPTS = {
     "ratio": "9:16",
     "layout": "split",
@@ -63,9 +100,13 @@ DEFAULT_OPTS = {
     "font": "barlow",
     "sfx": True,
     "filler_video": "",
+    "bgm": "",
+    "bgm_volume": 0.14,
     "cam_crop": None,
     "game_crop": None,
     "hindi_script": "devanagari",
+    "translate_to": "",
+    "pace": "",
 }
 
 
@@ -100,10 +141,32 @@ def resolve_options(args, spec: dict = None) -> dict:
         for k in DEFAULT_OPTS:
             if src.get(k) not in (None, ""):
                 opts[k] = src[k]
-    for k in ("ratio", "hook_mode", "caption_mode", "font", "cam_crop", "game_crop", "hindi_script"):
+    for k in (
+        "ratio",
+        "hook_mode",
+        "caption_mode",
+        "font",
+        "cam_crop",
+        "game_crop",
+        "hindi_script",
+        "bgm_volume",
+        "translate_to",
+        "pace",
+    ):
         v = getattr(args, k, None)
         if v not in (None, ""):
             opts[k] = v
+    cli_bgm = getattr(args, "bgm", None)
+    if cli_bgm:
+        opts["bgm"] = str(Path(cli_bgm).resolve())
+    if opts.get("bgm"):
+        resolve_bgm(opts["bgm"])  # validate early
+    try:
+        opts["bgm_volume"] = max(0.02, min(0.60, float(opts.get("bgm_volume") or 0.14)))
+    except (TypeError, ValueError):
+        raise ToolError(f"Bad bgm_volume '{opts.get('bgm_volume')}'.", "use a number between 0.02 and 0.60") from None
+    if str(opts.get("hindi_script") or "").strip().lower() == "hinglish":
+        opts["hindi_script"] = "roman"
     cli_filler = getattr(args, "filler_video", None)
     if cli_filler:
         opts["filler_video"] = str(Path(cli_filler).resolve())
@@ -292,6 +355,8 @@ def normalize_clip_spec(spec: dict, base_dir: Path) -> dict:
     out["source_video"] = _path(spec["source_video"])
     if spec.get("filler_video"):
         out["filler_video"] = str(_path(spec["filler_video"]))
+    if spec.get("bgm"):
+        out["bgm"] = str(_path(spec["bgm"]))
     if spec.get("brand_kit"):
         out["brand_kit"] = str(_path(spec["brand_kit"]))
     out["draft_name"] = str(spec.get("draft_name") or f"{out['source_video'].stem}_clip")

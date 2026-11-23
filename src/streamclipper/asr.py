@@ -47,9 +47,11 @@ class Whisper:
         extra = f", batch {self.batch_size}" if self.device == "cuda" and self.batch_size else ""
         return f"device {self.device} ({self.compute_type}{extra}), model {self.name}"
 
-    def run(self, audio, language=None) -> tuple:
+    def run(self, audio, language=None, task: str = "transcribe") -> tuple:
         """(words relative to the audio start, detected language). audio = wav path or 16 kHz float array."""
         kw = {"word_timestamps": True, "vad_filter": True, "language": language}
+        if task and task != "transcribe":
+            kw["task"] = task
         if isinstance(audio, (str, Path)):
             audio = read_wav16k(audio)
         if self.device == "cuda" and self.batch_size:
@@ -177,7 +179,13 @@ def _extract_wav(source: Path, a: float, b: float, wav: Path) -> Path:
 
 
 def transcribe_regions(
-    source: Path, regions: list, model_name: str, language: str, work_dir: Path, device: str = "cpu"
+    source: Path,
+    regions: list,
+    model_name: str,
+    language: str,
+    work_dir: Path,
+    device: str = "cpu",
+    task: str = "transcribe",
 ) -> tuple:
     """
     faster-whisper on candidate regions only (merged when overlapping). Each region is cut as 16 kHz
@@ -194,7 +202,8 @@ def transcribe_regions(
     words, langs = [], []
     total = sum(b - a for a, b in merged)
     for k, (a, b) in enumerate(merged, 1):
-        tag = file_tag(source, round(a, 2), round(b, 2), model_name, language, "asr1")
+        tag_ver = "asr1" if task == "transcribe" else f"asr1_{task}"
+        tag = file_tag(source, round(a, 2), round(b, 2), model_name, language, tag_ver)
         cache = work_dir / f"asr_{tag}.json"
         t0 = time.time()
         if cache.is_file():
@@ -204,7 +213,7 @@ def transcribe_regions(
             if model is None:
                 model = load_model(device, total, model_name)
                 t0 = time.time()
-            got, lang = model.run(wav, lang_arg)
+            got, lang = model.run(wav, lang_arg, task=task)
             data = {
                 "language": lang,
                 "words": [{**w, "s": round(a + w["s"], 3), "e": round(a + w["e"], 3)} for w in got],
@@ -265,9 +274,18 @@ def chunk_bounds(dur: float, islands: list, chunk_s: float = CHUNK_S, slack_s: f
 class _ChunkTranscriber:
     """Default chunk transcriber: wav cut -> Whisper; on a CUDA error it reloads on the CPU and retries."""
 
-    def __init__(self, source: Path, tmp_dir: Path, device: str, model_name: str, language, duration: float):
+    def __init__(
+        self,
+        source: Path,
+        tmp_dir: Path,
+        device: str,
+        model_name: str,
+        language,
+        duration: float,
+        task: str = "transcribe",
+    ):
         self.source, self.tmp_dir, self.device = Path(source), Path(tmp_dir), device
-        self.model_name, self.language, self.duration = model_name, language, duration
+        self.model_name, self.language, self.duration, self.task = model_name, language, duration, task
         self.w = None
 
     def load(self):
@@ -283,13 +301,13 @@ class _ChunkTranscriber:
         wav = _extract_wav(self.source, a, b, self.tmp_dir / "chunk_tmp.wav")
         try:
             try:
-                got, lang = self.w.run(wav, self.language)
+                got, lang = self.w.run(wav, self.language, task=self.task)
             except Exception as e:
                 if self.w.device != "cuda":
                     raise
                 print(f"CUDA error during transcription ({_short(e)}); switching to the CPU for the remaining chunks.")
                 self.w = load_model("cpu", self.duration, self.model_name)
-                got, lang = self.w.run(wav, self.language)
+                got, lang = self.w.run(wav, self.language, task=self.task)
         finally:
             wav.unlink(missing_ok=True)
         return [{**w, "s": round(a + w["s"], 3), "e": round(a + w["e"], 3)} for w in got], lang
@@ -307,6 +325,7 @@ def transcribe_full(
     chunk_s: float = CHUNK_S,
     slack_s: float = CHUNK_SLACK_S,
     transcribe_chunk=None,
+    task: str = "transcribe",
 ) -> tuple:
     """
     Whole-stream transcription in ~10 min chunks cut at silences. Each finished chunk is saved to
@@ -335,7 +354,7 @@ def transcribe_full(
     pending = [i for i in range(n) if chunks[i] is None]
     tr = transcribe_chunk
     if pending and tr is None:
-        tr = _ChunkTranscriber(source, asr_dir, device, model_name, lang_arg, dur)
+        tr = _ChunkTranscriber(source, asr_dir, device, model_name, lang_arg, dur, task=task)
         tr.load()
         if tr.w.device == "cpu" and dur > CPU_LONG_AFTER_S:
             print(
@@ -496,7 +515,9 @@ def rescue_words(source: Path, a: float, b: float, words: list, asr: dict, cache
     lang = asr.get("language")
     lang = None if not lang or lang == "auto" else lang
     model_name = asr.get("model") or "auto"
-    tag = file_tag(source, round(a, 2), round(b, 2), model_name, lang, "rescue1")
+    task = asr.get("task") or "transcribe"
+    rver = "rescue1" if task == "transcribe" else f"r_{task}"
+    tag = file_tag(source, round(a, 2), round(b, 2), model_name, lang, rver)
     cache = Path(cache_dir) / f"asr_rescue_{tag}.json"
     t0 = time.time()
     if cache.is_file():
@@ -508,13 +529,15 @@ def rescue_words(source: Path, a: float, b: float, words: list, asr: dict, cache
         w = _RESCUE_MODELS[key]
         wav = _extract_wav(Path(source), a, b, Path(cache_dir) / f"asr_rescue_{tag}.wav")
         try:
-            segs, _ = w.model.transcribe(
-                read_wav16k(wav),
-                word_timestamps=True,
-                vad_filter=False,
-                condition_on_previous_text=False,
-                language=lang,
-            )
+            rkw = {
+                "word_timestamps": True,
+                "vad_filter": False,
+                "condition_on_previous_text": False,
+                "language": lang,
+            }
+            if task != "transcribe":
+                rkw["task"] = task
+            segs, _ = w.model.transcribe(read_wav16k(wav), **rkw)
             heard = [
                 {
                     "w": x.word.strip(),

@@ -71,6 +71,11 @@ DEVANAGARI_VOWELS = {
     "ऐ": "ai",
     "ओ": "o",
     "औ": "au",
+    "ऑ": "o",
+    "ऍ": "e",
+    "ऎ": "e",
+    "ऒ": "o",
+    "ॐ": "om",
 }
 
 
@@ -85,18 +90,186 @@ DEVANAGARI_MATRAS = {
     "ै": "ai",
     "ो": "o",
     "ौ": "au",
+    "ॉ": "o",
+    "ॅ": "e",
+    "ॆ": "e",
+    "ॊ": "o",
+    "्": "",
+}
+
+# Nasal/visarga modifiers follow a syllable without replacing a bare consonant's inherent 'a'
+# (e.g. बंदा = ब + ं + द + ा -> "banda", NOT "bnda").
+DEVANAGARI_MODIFIERS = {
     "ं": "n",
     "ँ": "n",
     "ः": "h",
-    "्": "",
-    "़": "",
 }
+
+DEVANAGARI_DIGITS = {chr(0x0966 + d): str(d) for d in range(10)}
+
+# Whisper often emits Urdu/Perso-Arabic script for spoken Hindi/Hindustani when language='auto'.
+URDU_DIGRAPHS = {
+    "بھ": "bh",
+    "پھ": "ph",
+    "تھ": "th",
+    "ٹھ": "th",
+    "جھ": "jh",
+    "چھ": "chh",
+    "دھ": "dh",
+    "ڈھ": "dh",
+    "رھ": "rh",
+    "ڑھ": "rh",
+    "کھ": "kh",
+    "گھ": "gh",
+    "لھ": "lh",
+    "مھ": "mh",
+    "نھ": "nh",
+}
+
+URDU_CHARS = {
+    "ا": "a",
+    "آ": "aa",
+    "أ": "a",
+    "إ": "i",
+    "ب": "b",
+    "پ": "p",
+    "ت": "t",
+    "ٹ": "t",
+    "ث": "s",
+    "ج": "j",
+    "چ": "ch",
+    "ح": "h",
+    "خ": "kh",
+    "د": "d",
+    "ڈ": "d",
+    "ذ": "z",
+    "ر": "r",
+    "ڑ": "r",
+    "ز": "z",
+    "ژ": "zh",
+    "س": "s",
+    "ش": "sh",
+    "ص": "s",
+    "ض": "z",
+    "ط": "t",
+    "ظ": "z",
+    "ع": "a",
+    "غ": "gh",
+    "ف": "f",
+    "ق": "q",
+    "ک": "k",
+    "ك": "k",
+    "گ": "g",
+    "ل": "l",
+    "م": "m",
+    "ن": "n",
+    "ں": "n",
+    "و": "o",
+    "ؤ": "o",
+    "ہ": "h",
+    "ه": "h",
+    "ھ": "h",
+    "ۃ": "t",
+    "ء": "",
+    "ی": "i",
+    "ي": "i",
+    "ئ": "i",
+    "ے": "e",
+    **{chr(0x06F0 + d): str(d) for d in range(10)},
+    **{chr(0x0660 + d): str(d) for d in range(10)},
+}
+
+
+# Natural Hinglish spelling overrides (turns literal Devanagari transliteration into editor-grade Hinglish).
+HINGLISH_LEXICON = {
+    "bhaee": "bhai",
+    "bhaiyaa": "bhaiya",
+    "naheen": "nahi",
+    "nahin": "nahi",
+    "kyon": "kyun",
+    "kyonki": "kyunki",
+    "seen": "scene",
+    "bhee": "bhi",
+    "abhee": "abhi",
+    "kabhee": "kabhi",
+    "sabhee": "sabhi",
+    "wahee": "wahi",
+    "yahee": "yahi",
+    "kuchh": "kuch",
+    "phir": "fir",
+    "shuroo": "shuru",
+    "zindagee": "zindagi",
+    "ladakee": "ladki",
+    "ladaka": "ladka",
+    "gaadee": "gadi",
+    "gaaree": "gadi",
+    "maaree": "mari",
+    "sachee": "sachi",
+    "asalee": "asli",
+    "nakalee": "nakli",
+    "jaldee": "jaldi",
+    "theek": "thik",
+    "achchha": "achha",
+    "achchhe": "achhe",
+    "bhaag": "bhag",
+    "bhaago": "bhago",
+    "dekhie": "dekhiye",
+    "sunie": "suniye",
+    "karie": "kariye",
+    "chahie": "chahiye",
+    "chaahie": "chahiye",
+    "hamaara": "hamara",
+    "tumhaara": "tumhara",
+    "unaka": "unka",
+    "inaka": "inka",
+    "usaka": "uska",
+    "isaka": "iska",
+    "apanee": "apni",
+    "apana": "apna",
+    "apane": "apne",
+    "kitana": "kitna",
+    "kitanee": "kitni",
+    "kitane": "kitne",
+    "itana": "itna",
+    "itanee": "itni",
+    "itane": "itne",
+    "khatarnak": "khatarnak",
+    "khatarnaak": "khatarnak",
+    "bos": "boss",
+    "shoat": "shot",
+    "shaut": "shot",
+    "gaim": "game",
+    "stareem": "stream",
+    "streem": "stream",
+    "chat": "chat",
+    "bro": "bro",
+}
+
+
+def _polish_hinglish_line(line: str) -> str:
+    """Apply natural Hinglish spellings per word while preserving punctuation and original capitalisation."""
+    if not line:
+        return ""
+
+    def _repl(m: re.Match) -> str:
+        word = m.group(0)
+        low = word.lower()
+        rep = HINGLISH_LEXICON.get(low)
+        if not rep:
+            return word
+        if word.isupper():
+            return rep.upper()
+        if word[0].isupper():
+            return rep.capitalize()
+        return rep
+
+    return re.sub(r"[A-Za-z]+", _repl, line)
 
 
 def devanagari_to_hinglish(text: str, strip_emojis: bool = True) -> str:
     """
-    Convert Devanagari Hindi tokens into bold Roman Hinglish and strip stray CJK/Arabic
-    SFX hallucinations or oversized emojis that break custom TTF glyph metrics.
+    Convert Devanagari (and Urdu/Perso-Arabic Whisper Hindi output) into readable Roman Hinglish,
+    preserving ASCII, newlines and optional emojis while stripping stray CJK/unknown glyphs.
     """
     if not text:
         return ""
@@ -105,33 +278,41 @@ def devanagari_to_hinglish(text: str, strip_emojis: bool = True) -> str:
     i = 0
     while i < n:
         ch = text[i]
-        if i + 1 < n and text[i + 1] == "़" and (ch + "़") in DEVANAGARI_CONSONANTS:
-            base = DEVANAGARI_CONSONANTS[ch + "़"]
-            i += 2
+        if ch in DEVANAGARI_CONSONANTS:
+            if i + 1 < n and text[i + 1] == "़":
+                base = DEVANAGARI_CONSONANTS.get(ch + "़", DEVANAGARI_CONSONANTS[ch])
+                i += 2
+            else:
+                base = DEVANAGARI_CONSONANTS[ch]
+                i += 1
             if i < n and text[i] in DEVANAGARI_MATRAS:
                 out.append(base + DEVANAGARI_MATRAS[text[i]])
                 i += 1
-            elif i < n and (text[i] in DEVANAGARI_CONSONANTS or text[i] in DEVANAGARI_VOWELS):
+            elif i < n and (
+                text[i] in DEVANAGARI_CONSONANTS
+                or text[i] in DEVANAGARI_VOWELS
+                or text[i] in DEVANAGARI_MODIFIERS
+            ):
                 out.append(base + "a")
             else:
                 out.append(base)
-            continue
-        if ch in DEVANAGARI_CONSONANTS:
-            base = DEVANAGARI_CONSONANTS[ch]
-            if i + 1 < n and text[i + 1] in DEVANAGARI_MATRAS:
-                out.append(base + DEVANAGARI_MATRAS[text[i + 1]])
-                i += 2
-            elif i + 1 < n and (text[i + 1] in DEVANAGARI_CONSONANTS or text[i + 1] in DEVANAGARI_VOWELS):
-                out.append(base + "a")
-                i += 1
-            else:
-                out.append(base)
-                i += 1
         elif ch in DEVANAGARI_VOWELS:
             out.append(DEVANAGARI_VOWELS[ch])
             i += 1
         elif ch in DEVANAGARI_MATRAS:
             out.append(DEVANAGARI_MATRAS[ch])
+            i += 1
+        elif ch in DEVANAGARI_MODIFIERS:
+            out.append(DEVANAGARI_MODIFIERS[ch])
+            i += 1
+        elif ch in DEVANAGARI_DIGITS:
+            out.append(DEVANAGARI_DIGITS[ch])
+            i += 1
+        elif i + 1 < n and text[i : i + 2] in URDU_DIGRAPHS:
+            out.append(URDU_DIGRAPHS[text[i : i + 2]])
+            i += 2
+        elif ch in URDU_CHARS:
+            out.append(URDU_CHARS[ch])
             i += 1
         elif ord(ch) < 128:
             out.append(ch)
@@ -141,8 +322,8 @@ def devanagari_to_hinglish(text: str, strip_emojis: bool = True) -> str:
             i += 1
         else:
             i += 1
-    cleaned = re.sub(r"[ \t]+", " ", "".join(out)).strip()
-    return cleaned
+    lines = [_polish_hinglish_line(re.sub(r"[ \t]+", " ", ln).strip()) for ln in "".join(out).split("\n")]
+    return "\n".join(ln for ln in lines if ln)
 
 
 def wrap_caption_lines(raw_text: str, max_chars_per_line: int = 13) -> str:
@@ -197,6 +378,7 @@ def parse_multicolor_styles(
     keep_emoji: bool = False,
     colour_map: dict = None,
     stroke_rgb: list = None,
+    glow_fallback_rgb: list = None,
 ):
     """
     Build CapCut multi-range `styles[]` with:
@@ -299,19 +481,34 @@ def parse_multicolor_styles(
         ]
         if font_path:
             st["font"] = {"path": font_path, "id": font_id}
-        # Exact CapCut crisp drop shadow (diffuse=0.025, NEVER 0.72!)
-        st["shadows"] = [
-            {
-                "thickness_projection_angle": -45,
-                "thickness_projection_enable": False,
-                "diffuse": 0.025,
-                "alpha": 0.88,
-                "distance": 4.5,
-                "content": {"render_type": "solid", "solid": {"color": [0.0, 0.0, 0.0]}},
-                "angle": -45.0,
-                "thickness_projection_distance": 0,
-            }
-        ]
+        # Exact CapCut crisp drop shadow (diffuse=0.025, NEVER > 0.15!), or soft colored glow when
+        # TextBloom shader is not cached on the user's PC (neon-glow / outline-glow).
+        if glow_fallback_rgb:
+            st["shadows"] = [
+                {
+                    "thickness_projection_angle": 0,
+                    "thickness_projection_enable": False,
+                    "diffuse": 0.14,
+                    "alpha": 0.90,
+                    "distance": 0.0,
+                    "content": {"render_type": "solid", "solid": {"color": glow_fallback_rgb}},
+                    "angle": 0.0,
+                    "thickness_projection_distance": 0,
+                }
+            ]
+        else:
+            st["shadows"] = [
+                {
+                    "thickness_projection_angle": -45,
+                    "thickness_projection_enable": False,
+                    "diffuse": 0.025,
+                    "alpha": 0.88,
+                    "distance": 4.5,
+                    "content": {"render_type": "solid", "solid": {"color": [0.0, 0.0, 0.0]}},
+                    "angle": -45.0,
+                    "thickness_projection_distance": 0,
+                }
+            ]
         styles_out.append(st)
 
     return clean_text, styles_out, primary_hex
@@ -383,17 +580,25 @@ def make_text_glow_effect(
     }
 
 
-def _kf_track(prop: str, points: list) -> dict:
-    """One CapCut keyframe track from [(time_offset_us, value), ...] with smooth in/out curves."""
+def _kf_track(prop: str, points: list, curve: str = "FreeCurveInOut") -> dict:
+    """One CapCut keyframe track from [(time_offset_us, value), ...]. Bezier handles are clamped to 1/3 of each
+    adjacent span so handles never cross over on short captions."""
     kl = []
     for i, (t, v) in enumerate(points):
+        if curve == "Line":
+            lx, rx = 0.0, 0.0
+        else:
+            dt_l = (t - points[i - 1][0]) if i > 0 else 0
+            dt_r = (points[i + 1][0] - t) if i + 1 < len(points) else 0
+            lx = -round(dt_l * 0.33, 1) if dt_l > 0 else 0.0
+            rx = round(dt_r * 0.33, 1) if dt_r > 0 else 0.0
         kl.append(
             {
                 "id": new_id(),
-                "curveType": "FreeCurveInOut",
+                "curveType": curve,
                 "time_offset": int(t),
-                "left_control": {"x": 0.0 if i == 0 else -12000.0, "y": 0.0},
-                "right_control": {"x": 0.0 if i == len(points) - 1 else 12000.0, "y": 0.0},
+                "left_control": {"x": lx, "y": 0.0},
+                "right_control": {"x": rx, "y": 0.0},
                 "values": [round(float(v), 4)],
                 "string_value": "",
                 "graphID": "",
@@ -407,127 +612,37 @@ def make_pop_bounce_keyframes(
 ) -> list:
     """
     Generate native CapCut `common_keyframes` (`KFTypeScaleX`, `KFTypeScaleY`, `KFTypePositionY`)
-    so every caption or climax video segment springs/pops onto the screen with 0 external cache dependency!
+    with clean, proportional Bezier handles (never crossing over on short captions) and 0 external cache dependency.
     """
-    if not anim_style or anim_style == "none" or dur_us < 120000:
+    if not anim_style or anim_style == "none" or dur_us < 160000:
         return []
-    t1 = min(dur_us // 3, 95000)  # 95ms peak overshoot
-    t2 = min(dur_us // 2, 165000)  # 165ms settle
-    if anim_style == "shake":  # +-8 px jitter for 120 ms (x is normalised to half the canvas width)
-        d = 8 / 540
-        pts = [(0, base_x + d), (40000, base_x - d), (80000, base_x + d / 2), (120000, base_x)]
-        return [_kf_track("KFTypePositionX", pts)]
-    if anim_style == "bounce":  # rise 30 px from below, overshoot 8 px, settle
-        mid = min(dur_us // 2, 100000)
-        pts = [(0, base_y - 30 / 960), (mid, base_y + 8 / 960), (max(t2, mid + 30000), base_y)]
+    t1 = min(dur_us // 3, 75000)  # 75ms gentle overshoot
+    t2 = min(dur_us // 2, 130000)  # 130ms settle
+    if anim_style == "shake":  # crisp +-5 px micro-shake (Line curve avoids Bezier overshoot)
+        d = 5 / 540
+        step = min(35000, (dur_us - 10000) // 3)
+        pts = [(0, base_x + d), (step, base_x - d), (step * 2, base_x + d / 2), (step * 3, base_x)]
+        return [_kf_track("KFTypePositionX", pts, curve="Line")]
+    if anim_style == "bounce":  # subtle rise 18 px from below, 4 px overshoot, settle
+        mid = min(dur_us // 3, 85000)
+        end = min(dur_us - 10000, max(t2, mid + 45000))
+        pts = [(0, base_y - 18 / 960), (mid, base_y + 4 / 960), (end, base_y)]
         return [_kf_track("KFTypePositionY", pts)]
     if anim_style == "burst":
         anim_style = "pop-bounce"
     kfs = []
     if anim_style in ("pop-bounce", "slide-up-pop"):
+        scale_pts = [(0, base_scale * 0.90), (t1, base_scale * 1.04), (t2, base_scale)]
         for prop in ("KFTypeScaleX", "KFTypeScaleY"):
-            kfs.append(
-                {
-                    "id": new_id(),
-                    "material_id": "",
-                    "property_type": prop,
-                    "keyframe_list": [
-                        {
-                            "id": new_id(),
-                            "curveType": "FreeCurveInOut",
-                            "time_offset": 0,
-                            "left_control": {"x": 0.0, "y": 0.0},
-                            "right_control": {"x": 32000.0, "y": 0.0},
-                            "values": [round(base_scale * 0.72, 4)],
-                            "string_value": "",
-                            "graphID": "",
-                        },
-                        {
-                            "id": new_id(),
-                            "curveType": "FreeCurveInOut",
-                            "time_offset": t1,
-                            "left_control": {"x": -32000.0, "y": 0.0},
-                            "right_control": {"x": 24000.0, "y": 0.0},
-                            "values": [round(base_scale * 1.08, 4)],
-                            "string_value": "",
-                            "graphID": "",
-                        },
-                        {
-                            "id": new_id(),
-                            "curveType": "FreeCurveInOut",
-                            "time_offset": t2,
-                            "left_control": {"x": -24000.0, "y": 0.0},
-                            "right_control": {"x": 0.0, "y": 0.0},
-                            "values": [round(base_scale, 4)],
-                            "string_value": "",
-                            "graphID": "",
-                        },
-                    ],
-                }
-            )
+            kfs.append(_kf_track(prop, scale_pts))
     if anim_style == "slide-up-pop":
-        kfs.append(
-            {
-                "id": new_id(),
-                "material_id": "",
-                "property_type": "KFTypePositionY",
-                "keyframe_list": [
-                    {
-                        "id": new_id(),
-                        "curveType": "FreeCurveInOut",
-                        "time_offset": 0,
-                        "left_control": {"x": 0.0, "y": 0.0},
-                        "right_control": {"x": 45000.0, "y": 0.0},
-                        "values": [round(base_y - 0.06, 4)],
-                        "string_value": "",
-                        "graphID": "",
-                    },
-                    {
-                        "id": new_id(),
-                        "curveType": "FreeCurveInOut",
-                        "time_offset": t2,
-                        "left_control": {"x": -45000.0, "y": 0.0},
-                        "right_control": {"x": 0.0, "y": 0.0},
-                        "values": [round(base_y, 4)],
-                        "string_value": "",
-                        "graphID": "",
-                    },
-                ],
-            }
-        )
+        kfs.append(_kf_track("KFTypePositionY", [(0, base_y - 0.03), (t2, base_y)]))
     elif anim_style == "punch-zoom":
         # Smooth camera punch-in zoom over the segment
         zoom_t = min(dur_us - 33333, 220000)
+        zoom_pts = [(0, base_scale), (zoom_t, base_scale * 1.16)]
         for prop in ("KFTypeScaleX", "KFTypeScaleY"):
-            kfs.append(
-                {
-                    "id": new_id(),
-                    "material_id": "",
-                    "property_type": prop,
-                    "keyframe_list": [
-                        {
-                            "id": new_id(),
-                            "curveType": "FreeCurveInOut",
-                            "time_offset": 0,
-                            "left_control": {"x": 0.0, "y": 0.0},
-                            "right_control": {"x": 55000.0, "y": 0.0},
-                            "values": [round(base_scale, 4)],
-                            "string_value": "",
-                            "graphID": "",
-                        },
-                        {
-                            "id": new_id(),
-                            "curveType": "FreeCurveInOut",
-                            "time_offset": zoom_t,
-                            "left_control": {"x": -55000.0, "y": 0.0},
-                            "right_control": {"x": 0.0, "y": 0.0},
-                            "values": [round(base_scale * 1.16, 4)],
-                            "string_value": "",
-                            "graphID": "",
-                        },
-                    ],
-                }
-            )
+            kfs.append(_kf_track(prop, zoom_pts))
     return kfs
 
 
@@ -537,7 +652,7 @@ _LEGACY_MODES = {"hormozi-pop": "bold-pop", "karaoke-word": "karaoke-highlight",
 
 
 def capcut_fields(st: CaptionStyle, active: str, font: str = "", emoji: bool = False) -> dict:
-    """Per-caption CapCut text settings for a style (font, stroke, box, colours, tilt, emoji)."""
+    """Per-caption CapCut text settings for a style (font, stroke, box, colours, tilt, glow fallback, emoji)."""
     f = {"font": font or st.font, "stroke_width": round(st.outline * 0.07 / 6, 3), "glow": st.glow}
     cmap = {}
     if st.primary != "white":
@@ -547,8 +662,11 @@ def capcut_fields(st: CaptionStyle, active: str, font: str = "", emoji: bool = F
         cmap.update({"white": "black", active: "red"})
     if st.anim == "gradient":
         f["stroke_rgb"] = NEON_PALETTE["pink"][0]
+        f["stroke_width"] = max(f["stroke_width"], 0.10)
+    if st.anim == "neon":
+        f["glow_fallback_color"] = active
     if st.anim == "burst":
-        f["rotation"] = 4.0
+        f["rotation"] = -4.0
     if cmap:
         f["colour_map"] = cmap
     if emoji:
@@ -563,15 +681,23 @@ def hook_capcut_fields(hook_style: str) -> dict:
             "font": "anton",
             "glow": False,
             "background": NEON_PALETTE["red"][1],
+            "background_round_radius": 0.0,
             "colour_map": {"red": "yellow"},
             "line_max_width": 1.0,
         }
     if hook_style == "outline-glow":
-        return {"font": "anton", "glow": True, "glow_preset": "neon", "glow_color": "yellow"}
+        return {
+            "font": "anton",
+            "glow": True,
+            "glow_preset": "neon",
+            "glow_color": "yellow",
+            "glow_fallback_color": "yellow",
+        }
     return {
         "font": "anton",
         "glow": False,
         "background": NEON_PALETTE["yellow"][1],
+        "background_round_radius": 0.08,
         "colour_map": {"white": "black", "yellow": "red"},
     }
 
@@ -660,7 +786,8 @@ def build_word_synced_captions(
         raw = str(w.get("w", ""))
         if hindi_script == "roman":
             txt = devanagari_to_hinglish(raw, strip_emojis=True).strip()
-            txt = re.sub(r"[^A-Za-z0-9!?'%$-]", "", txt)
+            txt = re.sub(r"[^A-Za-z0-9 !?'%$-]", "", txt)
+            txt = re.sub(r"\s+", " ", txt).strip()
         else:
             txt = _CAPTION_STRIP.sub("", raw.replace("_", "")).strip()
         if not txt:

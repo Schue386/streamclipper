@@ -132,12 +132,23 @@ def _clip_argv(source: str, work: Path, o: dict) -> list:
         ("--ratio", "ratio"),
         ("--preset", "preset"),
         ("--caption-style", "caption_style"),
+        ("--caption-font", "caption_font"),
         ("--hook-style", "hook_style"),
         ("--llm-model", "llm_model"),
         ("--chat", "chat"),
     ):
         if o.get(key):
             argv += [flag, str(o[key])]
+    if (o.get("hindi_script") or "devanagari") != "devanagari":
+        argv += ["--hindi-script", str(o["hindi_script"])]
+    if o.get("translate_to"):
+        argv += ["--translate-to", str(o["translate_to"])]
+    if o.get("pace"):
+        argv += ["--pace", str(o["pace"])]
+    if o.get("bgm"):
+        argv += ["--bgm", str(o["bgm"])]
+        if o.get("bgm_volume") is not None:
+            argv += ["--bgm-volume", str(float(o["bgm_volume"]))]
     # 5.3 effects and HUD: only passed when not the default, so older callers get the same argv
     if (o.get("zoom") or "off") != "off":
         argv += ["--zoom", str(o["zoom"])]
@@ -178,6 +189,8 @@ def run_pipeline(
     whisper_model: str = "auto",
     device: str = "auto",
     language: str = "auto",
+    hindi_script: str = "devanagari",
+    caption_font: str = "",
     prefix: str = "clip",
     llm_model: str = "",
     chat: str = "",
@@ -212,6 +225,8 @@ def run_pipeline(
         "whisper_model": whisper_model or "auto",
         "device": device or "auto",
         "language": language or "auto",
+        "hindi_script": hindi_script or "devanagari",
+        "caption_font": caption_font or "",
         "preset": preset,
         "caption_style": caption_style,
         "hook_style": hook_style,

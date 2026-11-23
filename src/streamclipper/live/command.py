@@ -1,6 +1,7 @@
 """`streamclipper live`: ingest -> ring buffer -> rolling analysis -> background renders."""
 
 import json
+import os
 import signal
 import statistics
 import time
@@ -15,7 +16,7 @@ from streamclipper.live.engine import Engine, LiveASR
 from streamclipper.live.ingest import Ingest, channel_name, resolve_source
 from streamclipper.live.ring import Ring
 from streamclipper.live.worker import Worker
-from streamclipper.options import OPT_CHOICES, resolve_options
+from streamclipper.options import OPT_CHOICES, pace_min_pause, resolve_options
 from streamclipper.state import write_json_atomic
 from streamclipper.util import ToolError, fwd, isolate_children, require_tool
 
@@ -196,12 +197,18 @@ def cmd_live(args):
     assets = ensure_bundled_assets(find_capcut_local(), install=not args.no_draft)
     asr = _resolve_asr({"asr": args.asr})
     keep_s = args.buffer_min * 60.0
-    st = {"min_score": float(args.min_score), "content": opts["content"], "caption_style": opts["caption_style"]}
+    st = {
+        "min_score": float(args.min_score),
+        "min_pause": pace_min_pause(opts.get("pace")),
+        "content": opts["content"],
+        "caption_style": opts["caption_style"],
+    }
     ring = Ring(out / "buffer", keep_s)
     ingest = Ingest(args.url, kind, ring, out / "logs")
     transcriber = None
     if asr != "none":
-        transcriber = LiveASR(args.whisper_model, args.device, args.language)
+        asr_task = "translate" if opts.get("translate_to") == "en" else "transcribe"
+        transcriber = LiveASR(args.whisper_model, args.device, args.language, task=asr_task)
         transcriber.load()
     engine = Engine(st, transcriber, max_per_hour=args.max_clips_per_hour, keep_s=keep_s, tmp_dir=out / "tmp")
     chat = None
@@ -214,6 +221,7 @@ def cmd_live(args):
         "st": dict(engine.st, chat=chat is not None),
         "transcribed": transcriber is not None,
         "language": args.language if args.language not in ("", "auto") else "auto",
+        "language_fn": (lambda: transcriber.language_guess) if transcriber is not None else None,
         "asr": "live" if transcriber else "none",
         "llm": args.llm,
         "duration": lambda: ring.end,
@@ -232,6 +240,7 @@ def cmd_live(args):
         hook_override=(args.hook_text or "").replace("\\n", "\n"),
         llm=args.llm,
         llm_model=args.llm_model,
+        webhook=getattr(args, "webhook", "") or os.environ.get("STREAMCLIPPER_WEBHOOK", ""),
         moment_lock=engine.lock,
     )
     stop_txt = f", stops after {args.stop_after:g} min" if args.stop_after else ", runs until the stream ends"
@@ -288,6 +297,12 @@ def add_live_parser(sub, add_layout_flags, add_draft_flags, llm_providers, defau
     )
     lv.add_argument("--llm-model", default="", help="LLM model (default qwen2.5:7b for ollama)")
     lv.add_argument("--chat", choices=["auto", "off"], default="auto", help="Read live chat (Twitch, YouTube)")
+    lv.add_argument(
+        "--webhook",
+        default="",
+        help="Send clip-ready alerts to Discord, Telegram ('telegram:<BOT_TOKEN>:<CHAT_ID>') or any JSON webhook "
+        "(or set env STREAMCLIPPER_WEBHOOK)",
+    )
     add_layout_flags(lv)
     add_draft_flags(lv)
     return lv

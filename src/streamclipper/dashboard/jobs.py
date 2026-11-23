@@ -16,11 +16,12 @@ import time
 from collections import deque
 from pathlib import Path
 
-from streamclipper.captions.styles import AUTO_STYLE, HOOK_STYLES, STYLES
+from streamclipper.captions.styles import AUTO_STYLE, CAPTION_FONTS, HOOK_STYLES, STYLES
 from streamclipper.colab import _clip_argv
 from streamclipper.effects import ENHANCE_MIX, ZOOM_LEVELS
 from streamclipper.hud.analyze import HUD_MODES
-from streamclipper.llm import PROVIDERS
+from streamclipper.llm import PROVIDERS, TRANSLATE_LANGS
+from streamclipper.options import PACE_PRESETS
 from streamclipper.paths import PRESET_DIR
 from streamclipper.state import write_json_atomic
 from streamclipper.util import ToolError, own_group_flags
@@ -90,7 +91,14 @@ def validate_options(raw: dict) -> dict:
         "mode": mode,
         "preset": _choice(raw.get("preset"), presets(), "preset"),
         "caption_style": _choice(raw.get("caption_style"), [AUTO_STYLE, *STYLES], "caption style", AUTO_STYLE),
+        "caption_font": _choice(raw.get("caption_font"), list(CAPTION_FONTS), "caption font"),
         "hook_style": _choice(raw.get("hook_style"), list(HOOK_STYLES), "hook style"),
+        "language": str(raw.get("language") or "auto").strip() or "auto",
+        "hindi_script": _choice(
+            raw.get("hindi_script"), ("devanagari", "roman", "hinglish"), "hindi script", "devanagari"
+        ),
+        "translate_to": _choice(raw.get("translate_to"), list(TRANSLATE_LANGS), "translate target"),
+        "pace": _choice(raw.get("pace"), list(PACE_PRESETS), "pacing"),
         "ratio": _choice(raw.get("ratio"), RATIOS, "ratio", "9:16"),
         "llm": _choice(raw.get("llm"), PROVIDERS, "LLM", "none"),
         "min_score": _num(raw.get("min_score"), 0.0, 100.0, 50.0),
@@ -125,7 +133,11 @@ def build_vod_argv(source: str, opts: dict, job_dir: Path, brand_kit: Path = Non
         "llm": opts["llm"],
         "whisper_model": "auto",
         "device": "auto",
-        "language": "auto",
+        "language": opts.get("language") or "auto",
+        "hindi_script": opts.get("hindi_script") or "devanagari",
+        "translate_to": opts.get("translate_to") or "",
+        "pace": opts.get("pace") or "",
+        "caption_font": opts.get("caption_font") or "",
         "ratio": opts["ratio"],
         "preset": opts["preset"],
         "caption_style": opts["caption_style"],
@@ -150,9 +162,22 @@ def build_live_argv(source: str, opts: dict, job_dir: Path) -> list:
     argv = ["live", "--url", source, "--out", str(job_dir / "out"), "--prefix", "LIVE"]
     argv += ["--min-score", str(float(opts["min_score"])), "--max-clips-per-hour", str(int(opts["max_clips_per_hour"]))]
     argv += ["--stop-after", f"{float(opts['stop_after']):g}", "--ratio", opts["ratio"]]
-    for flag, key in (("--caption-style", "caption_style"), ("--hook-style", "hook_style"), ("--preset", "preset")):
+    for flag, key in (
+        ("--caption-style", "caption_style"),
+        ("--caption-font", "caption_font"),
+        ("--hook-style", "hook_style"),
+        ("--preset", "preset"),
+    ):
         if opts.get(key):
             argv += [flag, str(opts[key])]
+    if (opts.get("language") or "auto") != "auto":
+        argv += ["--language", str(opts["language"])]
+    if (opts.get("hindi_script") or "devanagari") != "devanagari":
+        argv += ["--hindi-script", str(opts["hindi_script"])]
+    if opts.get("translate_to"):
+        argv += ["--translate-to", str(opts["translate_to"])]
+    if opts.get("pace"):
+        argv += ["--pace", str(opts["pace"])]
     if opts["render"]:
         argv.append("--render")
     if opts["drafts"]:

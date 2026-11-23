@@ -867,7 +867,7 @@ async function brandCard(box) {
 
 async function pageHome(root) {
   const d = OPTS.defaults || {};
-  const st = { mode: "auto", preset: d.preset || "", ratio: "9:16", min_score: 50, max_clips: 3, llm: "none", render: true, drafts: false, upload: "", uploading: false, zoom: "off", enhance_speech: "off", remove_fillers: false, brand_kit: false };
+  const st = { mode: "auto", preset: d.preset || "", ratio: "9:16", min_score: 50, max_clips: 3, llm: "none", language: "auto", hindi_script: "devanagari", translate_to: "", pace: "", caption_font: "", render: true, drafts: false, upload: "", uploading: false, zoom: "off", enhance_speech: "off", remove_fillers: false, brand_kit: false };
   const narrow = window.matchMedia("(max-width: 640px)");
   const srcIn = h("input", { type: "text", id: "src-url", class: "hero-input", placeholder: narrow.matches ? "Paste a link or drop a video" : "Paste a stream link or drop a video", autocomplete: "off", spellcheck: "false", "aria-label": "Stream link or video" });
   const fileIn = h("input", { type: "file", id: "src-file", accept: "video/*,.mkv,.ts,.flv,.m4v", hidden: true });
@@ -954,6 +954,11 @@ async function pageHome(root) {
   llmOpts.push(OPTS.llms.includes("gemini") ? ["gemini", "Gemini"] : ["gemini", "Gemini (needs GEMINI_API_KEY)", true]);
   const llmSel = sel(llmOpts, "none", { id: "adv-llm", onchange: (e) => (st.llm = e.target.value) });
   const ratioSel = sel(OPTS.ratios, st.ratio, { id: "adv-ratio", onchange: (e) => (st.ratio = e.target.value) });
+  const langSel = sel(OPTS.languages || [["auto", "Auto-detect"]], st.language, { id: "adv-lang", onchange: (e) => (st.language = e.target.value) });
+  const scriptSel = sel(OPTS.hindi_scripts || [["devanagari", "Devanagari"], ["hinglish", "Hinglish"]], st.hindi_script, { id: "adv-script", onchange: (e) => (st.hindi_script = e.target.value) });
+  const fontSel = sel([["", "Style default"], ...(OPTS.caption_fonts || [])], st.caption_font, { id: "adv-font", onchange: (e) => (st.caption_font = e.target.value) });
+  const paceSel = sel(OPTS.paces || [["", "Default (0.55s)"]], st.pace, { id: "adv-pace", onchange: (e) => (st.pace = e.target.value) });
+  const transSel = sel(OPTS.translate_langs || [["", "Original"]], st.translate_to, { id: "adv-translate", onchange: (e) => (st.translate_to = e.target.value) });
   const toggle = (key, label, id) => {
     const c = h("input", { type: "checkbox", checked: st[key], id, role: "switch" });
     c.addEventListener("change", () => (st[key] = c.checked));
@@ -983,7 +988,12 @@ async function pageHome(root) {
       field("Aspect ratio", ratioSel),
       h("div", { class: "field" }, h("span", {}, "Minimum score ", scoreVal), score, h("span", { class: "hint", text: "Higher = fewer, stronger clips" })),
       field("Clips to make", maxIn, "Best first; 0 = every clip above the score"),
-      field("AI for titles", llmSel, OPTS.llms.includes("gemini") ? "" : "Set GEMINI_API_KEY before you start the dashboard to use Gemini.")
+      field("AI for titles", llmSel, OPTS.llms.includes("gemini") ? "" : "Set GEMINI_API_KEY before you start the dashboard to use Gemini."),
+      field("Stream language", langSel),
+      field("Hindi caption script", scriptSel, "Pick Hinglish for Roman Latin Hindi captions"),
+      field("Caption font", fontSel),
+      field("Jump-cut pacing", paceSel),
+      field("Translate captions", transSel, "English runs locally via Whisper; other languages use AI titles LLM")
     ),
     h("div", { class: "row" }, toggle("render", "Render ready-to-post MP4s", "adv-render"), toggle("drafts", "CapCut drafts", "adv-drafts")),
     h("p", { class: "hint" }, "Captions ", h("strong", { text: capName }), " · Hook ", h("strong", { text: hookName }), " · ", h("a", { href: "#/styles", text: "Change styles" })),
@@ -1028,7 +1038,7 @@ async function pageHome(root) {
       return;
     }
     const mode = st.mode === "auto" ? (!st.upload && looksLive(src) ? "live" : "vod") : st.mode;
-    const body = { mode, preset: st.preset, caption_style: capName, hook_style: hookName, ratio: st.ratio, min_score: st.min_score, max_clips: st.max_clips, llm: st.llm, render: st.render, drafts: st.drafts, zoom: st.zoom, enhance_speech: st.enhance_speech, remove_fillers: st.remove_fillers, brand_kit: st.brand_kit };
+    const body = { mode, preset: st.preset, caption_style: capName, caption_font: st.caption_font, hook_style: hookName, language: st.language, hindi_script: st.hindi_script, translate_to: st.translate_to, pace: st.pace, ratio: st.ratio, min_score: st.min_score, max_clips: st.max_clips, llm: st.llm, render: st.render, drafts: st.drafts, zoom: st.zoom, enhance_speech: st.enhance_speech, remove_fillers: st.remove_fillers, brand_kit: st.brand_kit };
     if (mode === "live") Object.assign(body, { stop_after: 60, max_clips_per_hour: 12 });
     if (st.upload) body.upload = st.upload;
     else body.source = src;
@@ -1694,6 +1704,8 @@ async function pageProject(root, id) {
         ...jobActions(job, () => refresh(true)),
         !d.lan && d.clips.some((c) => c.mp4_url) ? h("button", { class: "btn sm", type: "button", id: "schedule-week", onclick: () => scheduleModal(job, () => refresh(true)) }, icon("clock", 14), "Schedule week") : null,
         canShare ? h("button", { class: "btn sm", type: "button", onclick: () => shareModal({ kind: "job", job: job.id }, "all clips") }, icon("share-2", 14), "Share all") : null,
+        d.clips.some((c) => c.mp4_url) ? h("a", { class: "btn sm", id: "download-all-zip", href: `/api/jobs/${enc(job.id)}/download-zip` }, icon("download", 14), "Download all (ZIP)") : null,
+        d.clips.some((c) => c.draft) ? h("button", { class: "btn sm", type: "button", id: "import-all-capcut", onclick: async () => { try { const r = await api("POST", `/api/jobs/${enc(job.id)}/import-all-capcut`, {}); toast(r.message, "ok"); refresh(true); } catch (e) { fail(e); } } }, icon("external-link", 14), "Import all to CapCut") : null,
         d.clips.length ? h("a", { class: "btn sm", href: `/files/${enc(job.id)}/out/clips.csv?download=1` }, icon("download", 14), "clips.csv") : null
       )
     );
@@ -1715,7 +1727,7 @@ async function pageProject(root, id) {
 
 function liveForm() {
   const d = OPTS.defaults || {};
-  const st = { tab: "url", caption_style: d.caption_style || "auto", hook_style: d.hook_style || "bold-box", ratio: "9:16", min_score: 50, stop_after: 60, max_clips_per_hour: 12, llm: "none", render: true, drafts: false, upload: "" };
+  const st = { tab: "url", caption_style: d.caption_style || "auto", caption_font: "", hook_style: d.hook_style || "bold-box", language: "auto", hindi_script: "devanagari", translate_to: "", pace: "", ratio: "9:16", min_score: 50, stop_after: 60, max_clips_per_hour: 12, llm: "none", render: true, drafts: false, upload: "" };
   const urlIn = h("input", { type: "url", id: "src-url", placeholder: "https://www.twitch.tv/channel", autocomplete: "off" });
   const pathIn = h("input", { type: "text", id: "src-path", placeholder: "D:\\Videos\\my_stream.mp4", autocomplete: "off" });
   const fileIn = h("input", { type: "file", id: "src-file", accept: "video/*,.mkv,.ts,.flv,.m4v" });
@@ -1773,6 +1785,11 @@ function liveForm() {
     return h("label", { class: "switch" }, c, h("span", { class: "switch-ui", "aria-hidden": "true" }), label);
   };
   const ratioSel = sel(OPTS.ratios, st.ratio, { onchange: (e) => (st.ratio = e.target.value) });
+  const langSel = sel(OPTS.languages || [["auto", "Auto-detect"]], st.language, { id: "live-lang", onchange: (e) => (st.language = e.target.value) });
+  const scriptSel = sel(OPTS.hindi_scripts || [["devanagari", "Devanagari"], ["hinglish", "Hinglish"]], st.hindi_script, { id: "live-script", onchange: (e) => (st.hindi_script = e.target.value) });
+  const fontSel = sel([["", "Style default"], ...(OPTS.caption_fonts || [])], st.caption_font, { id: "live-font", onchange: (e) => (st.caption_font = e.target.value) });
+  const paceSel = sel(OPTS.paces || [["", "Default (0.55s)"]], st.pace, { id: "live-pace", onchange: (e) => (st.pace = e.target.value) });
+  const transSel = sel(OPTS.translate_langs || [["", "Original"]], st.translate_to, { id: "live-translate", onchange: (e) => (st.translate_to = e.target.value) });
   const err = h("p", { class: "err", role: "alert" });
   const submit = h("button", { class: "btn primary", type: "submit", id: "live-start" }, icon("radio", 16), "Start live clipping");
   const form = h(
@@ -1781,7 +1798,7 @@ function liveForm() {
     h("div", { class: "sec-head" }, h("h2", { text: "Start a live session" }), h("p", { text: "Paste the channel link while it is live. Clips appear above as soon as they are ready." })),
     tabs,
     paneBox,
-    h("div", { class: "grid3" }, field("Aspect ratio", ratioSel), h("div", { class: "field" }, h("span", {}, "Minimum score ", scoreVal), score, h("span", { class: "hint", text: "Higher = fewer, stronger clips" })), num("stop_after", 0, 1440, "Stop after (minutes)", "0 = when the stream ends"), num("max_clips_per_hour", 1, 60, "Max clips per hour")),
+    h("div", { class: "grid3" }, field("Aspect ratio", ratioSel), field("Stream language", langSel), field("Hindi script", scriptSel), field("Caption font", fontSel), field("Jump-cut pacing", paceSel), field("Translate captions", transSel), h("div", { class: "field" }, h("span", {}, "Minimum score ", scoreVal), score, h("span", { class: "hint", text: "Higher = fewer, stronger clips" })), num("stop_after", 0, 1440, "Stop after (minutes)", "0 = when the stream ends"), num("max_clips_per_hour", 1, 60, "Max clips per hour")),
     h("div", { class: "row" }, toggle("render", "Render ready-to-post MP4s"), toggle("drafts", "CapCut drafts")),
     h("details", { class: "styles-drawer" }, h("summary", { text: "Caption and hook style" }), h("div", { class: "stack" }, picker("caption", st.caption_style, (n) => (st.caption_style = n)), picker("hook", st.hook_style, (n) => (st.hook_style = n)))),
     h("div", { class: "row" }, submit, err)

@@ -4,10 +4,11 @@ import os
 from pathlib import Path
 
 from streamclipper.brand import load_brand_kit
-from streamclipper.captions.capcut import build_word_synced_captions, hook_capcut_fields
-from streamclipper.captions.styles import DEFAULT_HOOK_STYLE, clip_style, get_style
+from streamclipper.captions.capcut import build_word_synced_captions, devanagari_to_hinglish, hook_capcut_fields
+from streamclipper.captions.styles import DEFAULT_HOOK_STYLE, apply_case, clip_style, get_style
 from streamclipper.effects import any_on, check_effects, effects_of
-from streamclipper.layout import _norm_to_px, capcut_y, caption_anchor, layout_boxes
+from streamclipper.layout import _norm_to_px, capcut_y, caption_anchor, layout_boxes, probe_video
+from streamclipper.options import resolve_bgm
 from streamclipper.story import _inside_word, grid_off_word, off_word
 from streamclipper.util import DRAFT_FPS, file_tag, fwd, run_cmd
 
@@ -49,6 +50,9 @@ def plan_clip_spec(
 
     cstyle = get_style(opts.get("caption_style") or "")
     hook_style = opts.get("hook_style") or DEFAULT_HOOK_STYLE
+    hindi_script = opts.get("hindi_script", "devanagari")
+    if hook_text and hindi_script == "roman":
+        hook_text = apply_case(devanagari_to_hinglish(hook_text, strip_emojis=True), "upper")
     caption_y = panels["caption_y"]
     position = opts.get("caption_position") or "auto"
     if position != "auto":
@@ -98,6 +102,7 @@ def plan_clip_spec(
                     "tl_start": round(tl_cursor, 4),
                     "volume": 0.0,
                     "zoom": 1.08 if is_climax else 1.0,
+                    "anim": "punch-zoom" if is_climax else "none",
                     "pos_y": panels["overlay_pos_y"],
                 }
             )
@@ -223,6 +228,29 @@ def plan_clip_spec(
                 "capcut_only": True,
             }
         )
+    audio_tracks = []
+    bgm_src = resolve_bgm(opts.get("bgm") or "", seed=proj_name) if opts.get("bgm") else ""
+    if bgm_src and tl_cursor > 0:
+        bgm_vol = max(0.02, min(0.60, float(opts.get("bgm_volume") or 0.14)))
+        try:
+            bgm_dur = max(1.0, float(probe_video(Path(bgm_src))["dur"]))
+        except Exception:
+            bgm_dur = tl_cursor
+        t = 0.0
+        while t < tl_cursor - 0.05:
+            d = min(bgm_dur, tl_cursor - t)
+            audio_tracks.append(
+                {
+                    "source": bgm_src,
+                    "src_start": 0.0,
+                    "src_end": round(d, 4),
+                    "tl_start": round(t, 4),
+                    "volume": round(bgm_vol, 3),
+                    "audio_type": "extract_music",
+                    "trim_to_video": True,
+                }
+            )
+            t += d
     return {
         "project_name": proj_name,
         "draft_root": draft_root or "",
@@ -247,11 +275,13 @@ def plan_clip_spec(
             "glow_range": style.get("glow_range"),
             "auto_highlight": True,
             "max_chars_per_line": 13,
+            "hindi_script": hindi_script,
             "anim": style.get("anim", "pop-bounce"),
         },
         "video_track": video_track,
         "overlay_tracks": [overlay_track] if overlay_track else [],
         "captions": captions,
+        "audio_tracks": audio_tracks,
         "sfx_events": sfx_events,
     }
 
@@ -473,6 +503,16 @@ def make_clip_plan(
         ],
         "expected_duration": spec["expected_duration"],
         "timeline_spec": fwd(spec_path),
+        **(
+            {
+                "bgm": {
+                    "source": fwd(spec["audio_tracks"][0]["source"]),
+                    "volume": float(spec["audio_tracks"][0].get("volume", 0.14)),
+                }
+            }
+            if spec.get("audio_tracks")
+            else {}
+        ),
         # plans without effects render exactly as before 5.3 (the key is only written when one is on)
         **({"effects": dict(opts["effects"])} if any_on(opts.get("effects")) else {}),
     }

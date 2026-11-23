@@ -17,6 +17,20 @@ from streamclipper.util import CATEGORIES, ToolError
 
 PROVIDERS = ("none", "ollama", "gemini")
 DEFAULT_MODELS = {"ollama": "qwen2.5:7b", "gemini": "gemini-2.5-flash"}
+TRANSLATE_LANGS = {
+    "en": "English",
+    "hi": "Hindi (Devanagari script)",
+    "hinglish": "Hinglish (natural conversational Hindi written in Roman Latin letters)",
+    "es": "Spanish",
+    "pt": "Portuguese",
+    "fr": "French",
+    "de": "German",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "ar": "Arabic",
+    "id": "Indonesian",
+    "ru": "Russian",
+}
 OLLAMA_URL = "http://localhost:11434/api/chat"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 CHUNK_S = 480.0
@@ -244,3 +258,78 @@ def analyze_transcript(
         segs += got
     print(f"LLM: {len(segs)} story segment(s) proposed")
     return segs
+
+
+def _utterance_groups(words: list, max_words: int = 8, pause_s: float = 0.5) -> list:
+    """Group timed words into short utterances so translation preserves natural phrasing and timing."""
+    groups, cur = [], []
+    for w in words or []:
+        if cur and (len(cur) >= max_words or float(w["s"]) - float(cur[-1]["e"]) >= pause_s):
+            groups.append(cur)
+            cur = []
+        cur.append(w)
+    if cur:
+        groups.append(cur)
+    return groups
+
+
+def _distribute_words(text: str, s: float, e: float) -> list:
+    """Spread translated tokens proportionally across [s, e] by character weight."""
+    toks = [t for t in str(text or "").split() if t]
+    if not toks:
+        return []
+    dur = max(0.06, float(e) - float(s))
+    weights = [max(1, len(t)) for t in toks]
+    total_w = sum(weights)
+    out, cur = [], float(s)
+    for t, wt in zip(toks, weights, strict=True):
+        step = dur * (wt / total_w)
+        out.append({"w": t, "s": round(cur, 3), "e": round(cur + step, 3)})
+        cur += step
+    if out:
+        out[-1]["e"] = round(max(out[-1]["s"] + 0.02, float(e)), 3)
+    return out
+
+
+def translate_words(
+    words: list,
+    target_lang: str,
+    provider: str,
+    model: str = "",
+    hook: str = "",
+    call_fn=None,
+) -> tuple[list, str]:
+    """
+    Translate a clip's word-timed captions and optional hook into `target_lang` via Ollama/Gemini,
+    preserving utterance timestamps for word-synced captions. Non-fatal: returns (words, hook) on error.
+    """
+    lang_key = str(target_lang or "").strip().lower()
+    if not lang_key or not words or provider in ("", "none"):
+        return words, hook
+    lang_desc = TRANSLATE_LANGS.get(lang_key, lang_key)
+    groups = _utterance_groups(words)
+    lines = [" ".join(str(w["w"]).strip() for w in g) for g in groups]
+    prompt = (
+        f"You are a short-form viral video subtitle translator. Translate each caption line and the hook "
+        f"into natural, punchy {lang_desc} suitable for Reels/Shorts/TikTok captions.\n"
+        f"Keep each translated line concise so it matches the original spoken duration.\n"
+        f'Reply with JSON only: {{"lines": [exact same length {len(lines)}], "hook": "translated hook"}}\n\n'
+        f"Input JSON:\n" + json.dumps({"lines": lines, "hook": hook}, ensure_ascii=False)
+    )
+    model = model or DEFAULT_MODELS.get(provider, "")
+    try:
+        reply = (call_fn or _call)(provider, model, prompt)
+        m = re.search(r"\{.*\}", str(reply).strip(), flags=re.S)
+        obj = json.loads(m.group(0) if m else str(reply))
+        t_lines = obj.get("lines")
+        if not isinstance(t_lines, list) or len(t_lines) != len(groups):
+            return words, hook
+        out_words = []
+        for g, t_ln in zip(groups, t_lines, strict=True):
+            dist = _distribute_words(str(t_ln), float(g[0]["s"]), float(g[-1]["e"]))
+            out_words.extend(dist or g)
+        new_hook = str(obj.get("hook") or hook).strip() or hook
+        return out_words, new_hook
+    except (LLMUnavailable, ToolError, ValueError, TypeError, AttributeError) as e:
+        print(f"Caption translation to '{lang_key}' skipped ({e}).")
+        return words, hook

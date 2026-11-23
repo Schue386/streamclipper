@@ -2,7 +2,7 @@
 
 import re
 
-from streamclipper.captions.capcut import devanagari_to_hinglish
+from streamclipper.captions.capcut import HINGLISH_LEXICON, devanagari_to_hinglish
 
 MIN_PCT = 97.0  # FAIL below this share of spoken words shown
 MAX_GAP = 0.6  # FAIL when speech goes this long (s) without any caption
@@ -43,10 +43,11 @@ def spoken_words_tl(plan: dict) -> list:
 
 def _matches(word: str, tokens: list) -> bool:
     n = _norm(word)
-    alt = _norm(devanagari_to_hinglish(word)) if any("\u0900" <= ch <= "\u097f" for ch in word) else ""
+    non_latin = any("\u0900" <= ch <= "\u097f" or "\u0600" <= ch <= "\u06ff" for ch in word)
+    alt = _norm(devanagari_to_hinglish(word)) if non_latin else ""
     for raw in tokens:
         t = _norm(raw)
-        if t and (t == n or (alt and t == alt)):
+        if t and (t == n or (alt and (t == alt or HINGLISH_LEXICON.get(t, t) == alt))):
             return True
         m = _MASKED.match(re.sub(r"[^\w*]", "", str(raw)))
         if m and n and n[0] == m.group(1).casefold() and len(n) == len(m.group(0)):

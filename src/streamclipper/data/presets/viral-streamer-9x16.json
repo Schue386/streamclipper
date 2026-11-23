@@ -1,0 +1,12 @@
+{
+  "name": "viral-streamer-9x16",
+  "description": "Global 9:16 creator preset: locked bold-pop Barlow captions (no random per-clip font switches), bold-box hook, facecam-top split.",
+  "ratio": "9:16",
+  "layout": "split",
+  "hook_mode": "tease-climax",
+  "caption_style": "bold-pop",
+  "hook_style": "bold-box",
+  "caption_font": "barlow",
+  "font": "barlow",
+  "sfx": true
+}

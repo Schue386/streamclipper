@@ -19,7 +19,8 @@ from streamclipper.draft.writer import (
     load_schema,
     resolve_draft_root,
 )
-from streamclipper.env import find_capcut_local
+from streamclipper.env import find_capcut_local, install_user_fonts
+from streamclipper.paths import TEMPLATE_DIR
 from streamclipper.util import ToolError, fwd, new_id
 
 REPLACED_DIR = "streamclipper_replaced_drafts"  # next to the draft root; --overwrite moves old drafts here
@@ -106,6 +107,7 @@ def import_draft_zip(zip_path, draft_root: str = "", overwrite: bool = False, cl
         raise ToolError(f"Zip not found: {fwd(zp)}", "pass the capcut_drafts.zip you downloaded from Colab/Drive")
     root = resolve_draft_root(draft_root or "").resolve()
     guard_capcut(root, close_capcut)
+    install_user_fonts(TEMPLATE_DIR / "fonts")
     try:
         zf = zipfile.ZipFile(zp)
     except zipfile.BadZipFile:

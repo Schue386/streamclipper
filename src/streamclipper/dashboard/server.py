@@ -530,6 +530,16 @@ class Handler(BaseHTTPRequestHandler):
             job = srv.store.get(check_job_id(api[1]))
             clips = srv.publisher.decorate(api[1], library.list_clips(srv.store, api[1], statuses))
             return self._send_json(200, {"job": self._public_job(job), "clips": clips, "lan": srv.lan})
+        if len(api) == 3 and api[0] == "jobs" and api[2] == "download-zip":
+            job_id = check_job_id(api[1])
+            srv.store.get(job_id)
+            out_dir = srv.store.job_dir(job_id) / "out"
+            if not out_dir.is_dir() or not any(out_dir.glob("*.mp4")):
+                raise ToolError("No rendered MP4 clips in this project yet.", "render clips first before downloading")
+            from streamclipper.colab import zip_outputs
+
+            zp = zip_outputs(out_dir, srv.store.job_dir(job_id) / f"{job_id}_clips.zip")
+            return self._send_file(zp, "application/zip", download=True)
         if len(api) == 5 and api[0] == "jobs" and api[2] == "clips" and api[4] == "publish":
             self._local_only()
             job_id, key = check_job_id(api[1]), library.check_key(api[3])
@@ -593,6 +603,19 @@ class Handler(BaseHTTPRequestHandler):
             if action == "resume":
                 srv.runner.resume(job_id)
                 return self._send_json(200, {"status": "queued"})
+            if action == "import-all-capcut":
+                clips = [c for c in library.list_clips(srv.store, job_id) if c.get("draft")]
+                if not clips:
+                    raise ToolError("No CapCut drafts in this project.", "run the job with CapCut drafts enabled")
+                names = [library.open_in_capcut(srv.store, job_id, c["key"], srv.draft_root) for c in clips]
+                return self._send_json(
+                    200,
+                    {
+                        "imported": names,
+                        "count": len(names),
+                        "message": f"Imported {len(names)} draft(s) into CapCut. Open CapCut to edit them.",
+                    },
+                )
             raise HttpError(404, "Not found.")
         if len(api) == 4 and api[0] == "jobs" and api[2:] == ["publish", "schedule"]:
             self._local_only()
@@ -756,14 +779,52 @@ class Handler(BaseHTTPRequestHandler):
     # ---- API helpers -------------------------------------------------------------------------------------------
 
     def _options(self) -> dict:
+        from streamclipper.captions.styles import CAPTION_FONTS
         from streamclipper.captions.styles import STYLES as _S
 
         return {
             "presets": presets(),
             "caption_styles": [AUTO_STYLE, *STYLES],
             "caption_looks": {k: v.look for k, v in _S.items()},
+            "caption_fonts": list(CAPTION_FONTS),
             "hook_styles": list(HOOK_STYLES),
             "hook_looks": dict(HOOK_STYLES),
+            "languages": [
+                ["auto", "Auto-detect"],
+                ["en", "English"],
+                ["hi", "Hindi / Hinglish"],
+                ["es", "Spanish"],
+                ["pt", "Portuguese"],
+                ["fr", "French"],
+                ["de", "German"],
+                ["ja", "Japanese"],
+                ["ko", "Korean"],
+                ["ar", "Arabic"],
+                ["id", "Indonesian"],
+                ["ru", "Russian"],
+            ],
+            "hindi_scripts": [["devanagari", "Devanagari"], ["hinglish", "Hinglish (Roman Latin)"]],
+            "paces": [
+                ["", "Default (0.55s)"],
+                ["fast", "Fast (0.28s snappy)"],
+                ["normal", "Normal (0.55s)"],
+                ["chill", "Chill (0.95s podcast)"],
+            ],
+            "translate_langs": [
+                ["", "Original (no translate)"],
+                ["en", "English (local Whisper)"],
+                ["hi", "Hindi (Devanagari)"],
+                ["hinglish", "Hinglish (Roman Latin)"],
+                ["es", "Spanish"],
+                ["pt", "Portuguese"],
+                ["fr", "French"],
+                ["de", "German"],
+                ["ja", "Japanese"],
+                ["ko", "Korean"],
+                ["ar", "Arabic"],
+                ["id", "Indonesian"],
+                ["ru", "Russian"],
+            ],
             "ratios": ["9:16", "1:1"],
             "llms": available_llms(bool(self.server.ollama.get())),
             "share_days": list(DAYS),

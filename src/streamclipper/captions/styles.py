@@ -255,7 +255,7 @@ def emoji_positions(words: list) -> dict:
     return out
 
 
-# Common English profanity (masked as f***, first letter kept). Default off.
+# Common English + Hinglish profanity (masked as f*** / b***, first letter kept). Default off.
 PROFANITY = {
     "fuck",
     "fucking",
@@ -282,7 +282,28 @@ PROFANITY = {
     "whore",
     "slut",
     "crap",
+    "madarchod",
+    "behenchod",
+    "bhenchod",
+    "chutiya",
+    "chutiye",
+    "bhosdike",
+    "bsdk",
+    "gandu",
+    "harami",
+    "kamina",
+    "kamine",
+    "loda",
+    "lauda",
+    "randi",
+    "bakchod",
 }
+
+
+def is_profane(word: str) -> bool:
+    """True when the alphabetic core of `word` is in PROFANITY (English or Hinglish)."""
+    m = re.match(r"^\W*([A-Za-z']+)\W*$", str(word or ""))
+    return bool(m and m.group(1).lower().replace("'", "") in PROFANITY)
 
 
 def mask_profanity(word: str) -> str:

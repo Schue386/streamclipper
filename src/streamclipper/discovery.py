@@ -314,12 +314,19 @@ def discover(
             model_name=st.get("whisper_model") or "auto",
             device=st.get("device") or "auto",
             language=st.get("language"),
+            task=st.get("asr_task") or "transcribe",
         )
     elif asr == "regions":
         regions = [(max(0.0, pk["t"] - 30.0), min(dur, pk["t"] + 8.0)) for pk in peaks]
         print(f"Transcribing {len(regions)} candidate regions with faster-whisper '{st['whisper_model']}' ...")
         words, lang = transcribe_regions(
-            source, regions, st["whisper_model"], st.get("language"), work_dir, st.get("device") or "auto"
+            source,
+            regions,
+            st["whisper_model"],
+            st.get("language"),
+            work_dir,
+            st.get("device") or "auto",
+            task=st.get("asr_task") or "transcribe",
         )
     provider, model = _llm_provider(st)
     llm_segs = []
@@ -466,13 +473,17 @@ def _asr_mode(asr: str, transcribe) -> str:
 
 
 def _discover_settings(args, transcribe) -> dict:
+    from streamclipper.options import pace_min_pause
+
+    pace = getattr(args, "pace", None) or ""
+    min_pause = pace_min_pause(pace, float(args.min_pause)) if pace else float(args.min_pause)
     st = {
         "max_clips": max(0, int(getattr(args, "max_clips", 0) or 0)),
         "min_score": DEFAULT_BAR["min_score"] if getattr(args, "min_score", None) is None else float(args.min_score),
         "min_dur": float(args.min_dur),
         "max_dur": float(args.max_dur),
         "target_dur": float(args.target_dur),
-        "min_pause": float(args.min_pause),
+        "min_pause": min_pause,
         "db": float(args.db),
         "asr": _asr_mode(getattr(args, "asr", "auto"), transcribe),
         "whisper_model": args.whisper_model or "auto",

@@ -29,8 +29,8 @@ from streamclipper.draft.importer import cmd_import_draft
 from streamclipper.effects import ENHANCE_MIX, ZOOM_LEVELS
 from streamclipper.hud.analyze import HUD_MODES
 from streamclipper.live.command import add_live_parser, cmd_live
-from streamclipper.llm import PROVIDERS
-from streamclipper.options import OPT_CHOICES
+from streamclipper.llm import PROVIDERS, TRANSLATE_LANGS
+from streamclipper.options import OPT_CHOICES, PACE_PRESETS
 from streamclipper.publish.youtube import PRIVACY
 from streamclipper.scoring import CONTENTS, DEFAULT_BAR
 from streamclipper.util import ToolError
@@ -179,6 +179,12 @@ def _add_caption_flags(p):
     p.add_argument(
         "--hook-style", choices=list(HOOK_STYLES), default=None, help="Hook headline banner look (default bold-box)"
     )
+    p.add_argument(
+        "--hindi-script",
+        choices=["devanagari", "roman", "hinglish"],
+        default=None,
+        help="How Hindi captions are written: devanagari (default) or roman/hinglish (Latin script)",
+    )
 
 
 def _add_effect_flags(p):
@@ -221,6 +227,22 @@ def _add_layout_flags(p):
     p.add_argument("--cam-crop", default=None, help="Webcam box in source pixels x,y,w,h (overrides auto detection)")
     p.add_argument("--game-crop", default=None, help="Gameplay box in source pixels x,y,w,h")
     p.add_argument("--filler-video", default=None, help="Filler video for the hook-grabber bottom panel")
+    p.add_argument("--bgm", default=None, help="Background music file or folder (auto-ducked under voice)")
+    p.add_argument(
+        "--bgm-volume", type=float, default=None, help="Background music volume 0.02-0.60 (default 0.14)"
+    )
+    p.add_argument(
+        "--translate-to",
+        choices=list(TRANSLATE_LANGS),
+        default=None,
+        help="Auto-translate captions to another language (en works locally with Whisper; other languages use --llm)",
+    )
+    p.add_argument(
+        "--pace",
+        choices=list(PACE_PRESETS),
+        default=None,
+        help="Jump-cut pacing: fast (0.28s pauses), normal (0.55s), chill (0.95s)",
+    )
 
 
 def _add_publish_source(p, rank_default=1):
@@ -369,9 +391,6 @@ def build_parser() -> argparse.ArgumentParser:
     cs.add_argument("--no-transcribe", action="store_true", help="Never run Whisper (= --asr none)")
     _add_asr_flags(cs)
     cs.add_argument("--language", default="auto", help="Whisper language code (en, hi) or auto")
-    cs.add_argument(
-        "--hindi-script", choices=["devanagari", "roman"], default="devanagari", help="How Hindi captions are written"
-    )
     _add_hud_flags(cs)
     _add_layout_flags(cs)
     _add_effect_flags(cs)
@@ -421,9 +440,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rn.add_argument("--font", choices=list(OPT_CHOICES["font"]), default=None, help="Old name of --caption-font")
     rn.add_argument("--hook-text", default="", help="Hook text; \\n starts a new line (default: from clips.json)")
-    rn.add_argument(
-        "--hindi-script", choices=["devanagari", "roman"], default="devanagari", help="How Hindi captions are written"
-    )
     _add_layout_flags(rn)
     _add_effect_flags(rn)
     _add_draft_flags(rn, render=False)

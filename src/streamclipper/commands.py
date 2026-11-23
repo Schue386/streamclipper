@@ -56,7 +56,8 @@ from streamclipper.layout import (
     sample_exposure,
     with_caption_anchor,
 )
-from streamclipper.options import clip_boxes, clip_layout, normalize_clip_spec, resolve_options
+from streamclipper.llm import translate_words
+from streamclipper.options import clip_boxes, clip_layout, normalize_clip_spec, pace_min_pause, resolve_options
 from streamclipper.paths import ENV_FILE
 from streamclipper.report import rel_path, write_report
 from streamclipper.state import RunState, write_json_atomic
@@ -263,7 +264,7 @@ def build_high_level_clip(spec: dict, base_dir: Path, args) -> dict:
         if norm["trim_silence"] and meta["has_audio"]:
             env = audio_envelope(src, work_dir / "analysis")
             islands = islands_from_env(env, -48.0, 0.20)
-            trimmed = trim_pauses({"start": start, "end": end}, islands, 0.55)
+            trimmed = trim_pauses({"start": start, "end": end}, islands, pace_min_pause(opts.get("pace")))
             pieces = [(s["src_s"], s["src_e"]) for s in snap_segments(trimmed, norm["words"], ws, we)]
         piece_words = [[w for w in norm["words"] if w["e"] > a and w["s"] < b] for a, b in pieces]
     segs = [
@@ -368,6 +369,8 @@ def clip_stream(args) -> dict:
     st = _discover_settings(args, transcribe)
     st["content"] = opts["content"]
     st["caption_style"] = opts["caption_style"]
+    if opts.get("translate_to") == "en":
+        st["asr_task"] = "translate"
     if opts["hook_mode"] == "split-shock":
         st["rank_by"] = "shock"
 
@@ -414,6 +417,7 @@ def clip_stream(args) -> dict:
             "device": st.get("device") or "auto",
             "language": res.get("language"),
             "duration": res.get("duration"),
+            "task": st.get("asr_task") or "transcribe",
         }
     results, plans = [], []
     make_key = _make_key(opts, args, hook_override, len(make) > 1)
@@ -453,6 +457,8 @@ def clip_stream(args) -> dict:
                 no_draft=args.no_draft,
                 portable=getattr(args, "portable_drafts", False),
                 asr=asr,
+                llm=st.get("llm") or "none",
+                llm_model=st.get("llm_model") or "",
             )
         except SkipClip as e:
             print(f"Clip rank {clip['rank']} ({_mmss(clip['start'])}-{_mmss(clip['end'])}) skipped: {e}")
@@ -528,6 +534,8 @@ def make_stream_clip(
     no_draft: bool = True,
     portable: bool = False,
     asr: dict = None,
+    llm: str = "none",
+    llm_model: str = "",
 ) -> dict:
     """
     One discovered clip -> window file -> layout panels -> timeline (hook mode) -> CapCut draft
@@ -594,6 +602,16 @@ def make_stream_clip(
     segs, words, removed = _apply_fillers(segs, words, clip["peak"], opts, f"Clip {idx + 1}", verbatim, ws)
     segs = fit_timeline(segs, words)
     hook = hook_override or clip["hook_headline"]
+    target_lang = opts.get("translate_to") or ""
+    already_en = target_lang == "en" and (asr or {}).get("task") == "translate"
+    if target_lang and not already_en:
+        if llm and llm != "none":
+            words, hook = translate_words(words, target_lang, llm, llm_model, hook=hook)
+            for s in segs:
+                if s.get("kind") != "tease":
+                    s["words"] = [w for w in words if w["e"] > s["cut_start"] and w["s"] < s["cut_end"]]
+        elif target_lang != "en":
+            print(f"Clip {idx + 1}: --translate-to {target_lang} needs --llm ollama or --llm gemini; kept original.")
     if opts.get("profanity_filter"):
         hook = " ".join(mask_profanity(w) for w in hook.split(" "))
     spec = plan_clip_spec(

@@ -1,0 +1,13 @@
+{
+  "name": "hinglish-streamer-9x16",
+  "description": "Vertical 9:16 for Hindi/Hinglish live streams: locked bold-pop Barlow captions in natural Roman Hinglish, bold-box hook, facecam-top split.",
+  "ratio": "9:16",
+  "layout": "split",
+  "hook_mode": "tease-climax",
+  "caption_style": "bold-pop",
+  "hook_style": "bold-box",
+  "caption_font": "barlow",
+  "font": "barlow",
+  "hindi_script": "roman",
+  "sfx": true
+}

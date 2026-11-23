@@ -25,6 +25,7 @@ from streamclipper.env import (
     find_font_fallback,
     kill_capcut,
     resolve_font,
+    ttf_full_name,
 )
 from streamclipper.layout import make_crop_dict, probe_video
 from streamclipper.paths import TEMPLATE_DIR
@@ -300,6 +301,7 @@ def build_from_spec_dict(spec: dict) -> Path:
         default_glow_col = style_cfg.get("glow_color", "yellow")
         auto_hl = bool(style_cfg.get("auto_highlight", True))
         max_cpl = int(style_cfg.get("max_chars_per_line", 13))
+        hindi_script = str(style_cfg.get("hindi_script") or "devanagari")
         base_style_tpl = json.loads(schema["mat_text_base"]["content"])["styles"][0]
 
         layers = {}
@@ -327,49 +329,33 @@ def build_from_spec_dict(spec: dict) -> Path:
                 g_col_name = cap.get("glow_color", default_glow_col)
                 _, req_glow_hex = NEON_PALETTE.get(g_col_name, NEON_PALETTE["yellow"])
 
-                font_path, font_id = resolve_font(cap.get("font", font_choice), raw_txt, assets, cc_local)
+                cap_script = str(cap.get("hindi_script") or hindi_script)
+                font_sample = "" if cap_script == "roman" else raw_txt
+                font_path, font_id = resolve_font(cap.get("font", font_choice), font_sample, assets, cc_local)
+                eff_font_path = font_path or sys_font_path
+                font_display = ttf_full_name(Path(eff_font_path)) if eff_font_path else ""
+                glows = assets.get("glows") or {}
+                has_glow_shader = use_glow and bool(glows.get(g_preset if g_preset in glows else "neon"))
+                fb_col = cap.get("glow_fallback_color") if (use_glow and not has_glow_shader) else None
+                fb_rgb, fb_hex = NEON_PALETTE.get(fb_col, (None, None)) if fb_col else (None, None)
                 clean_txt, styles_list, detected_hex = parse_multicolor_styles(
                     raw_txt,
                     base_style_tpl,
-                    font_path,
+                    eff_font_path,
                     font_id,
                     sz,
                     float(cap.get("stroke_width", default_stroke)),
                     auto_highlight=cap.get("auto_highlight", auto_hl),
                     max_chars_per_line=int(cap.get("max_chars_per_line", max_cpl)),
-                    keep_devanagari=(Path(font_path).name == "Baloo2-ExtraBold.ttf"),
+                    keep_devanagari=(cap_script != "roman" and Path(eff_font_path).name == "Baloo2-ExtraBold.ttf"),
                     keep_emoji=bool(cap.get("emoji")),
                     colour_map=cap.get("colour_map"),
                     stroke_rgb=cap.get("stroke_rgb"),
+                    glow_fallback_rgb=fb_rgb,
                 )
 
-                tm = copy.deepcopy(schema["mat_text_base"])
-                tid = new_id()
-                tm["id"] = tid
-                tm["font_size"] = sz
-                tm["font_path"] = font_path or sys_font_path
-                tm["font_id"] = font_id
-                tm["use_effect_default_color"] = False
-                tm["line_max_width"] = float(cap.get("line_max_width", 0.82))
-                if cap.get("background"):  # highlight-box / bold-box / top-bar
-                    tm["background_color"] = cap["background"]
-                    tm["background_alpha"] = 1.0
-                    tm["background_style"] = 1
-                    tm["background_round_radius"] = 0.12
-                tm["has_shadow"] = True
-                tm["shadow_color"] = "#000000"
-                tm["shadow_alpha"] = 0.88
-                tm["shadow_smoothing"] = 0.025
-                tm["shadow_distance"] = 4.5
-                tm["shadow_angle"] = -45.0
-                tm["border_alpha"] = 1.0
-                tm["border_color"] = "#0A0A12"
-                tm["border_width"] = float(cap.get("stroke_width", default_stroke))
-                tm["check_flag"] = 71 if use_glow else 15
-                tm["content"] = json.dumps({"text": clean_txt, "styles": styles_list}, ensure_ascii=False)
-                mats["texts"].append(tm)
-
                 extra_refs = [add_mat("material_animations", X["txt_anim"])]
+                geff = None
                 if use_glow:
                     glow_hex = detected_hex if detected_hex != "#FFFFFF" else req_glow_hex
                     geff = make_text_glow_effect(
@@ -382,6 +368,52 @@ def build_from_spec_dict(spec: dict) -> Path:
                     if geff is not None:
                         mats["effects"].append(geff)
                         extra_refs.append(geff["id"])
+
+                stroke_rgb = cap.get("stroke_rgb")
+                border_hex = (
+                    "#{:02X}{:02X}{:02X}".format(*(int(round(c * 255)) for c in stroke_rgb[:3]))
+                    if stroke_rgb
+                    else "#0A0A12"
+                )
+                tm = copy.deepcopy(schema["mat_text_base"])
+                tid = new_id()
+                tm["id"] = tid
+                tm["name"] = clean_txt.replace("\n", " ")[:60]
+                tm["recognize_text"] = ""
+                tm["group_id"] = ""
+                tm["add_type"] = 0
+                tm["font_size"] = sz
+                tm["font_path"] = eff_font_path
+                tm["font_id"] = font_id
+                tm["font_name"] = font_display
+                tm["font_title"] = font_display or "none"
+                tm["text_color"] = detected_hex.lower() if detected_hex else "#ffffff"
+                tm["use_effect_default_color"] = False
+                tm["line_max_width"] = float(cap.get("line_max_width", 0.82))
+                if cap.get("background"):  # highlight-box / bold-box / top-bar
+                    tm["background_color"] = cap["background"]
+                    tm["background_alpha"] = 1.0
+                    tm["background_style"] = 1
+                    tm["background_round_radius"] = float(cap.get("background_round_radius", 0.12))
+                tm["has_shadow"] = True
+                if fb_hex:
+                    tm["shadow_color"] = fb_hex
+                    tm["shadow_alpha"] = 0.90
+                    tm["shadow_smoothing"] = 0.14
+                    tm["shadow_distance"] = 0.0
+                    tm["shadow_angle"] = 0.0
+                else:
+                    tm["shadow_color"] = "#000000"
+                    tm["shadow_alpha"] = 0.88
+                    tm["shadow_smoothing"] = 0.025
+                    tm["shadow_distance"] = 4.5
+                    tm["shadow_angle"] = -45.0
+                tm["border_alpha"] = 1.0
+                tm["border_color"] = border_hex
+                tm["border_width"] = float(cap.get("stroke_width", default_stroke))
+                tm["check_flag"] = 71 if geff is not None else 15
+                tm["content"] = json.dumps({"text": clean_txt, "styles": styles_list}, ensure_ascii=False)
+                mats["texts"].append(tm)
 
                 tseg = copy.deepcopy(schema["seg_text_base"])
                 tseg["id"] = new_id()

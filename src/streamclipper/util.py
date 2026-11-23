@@ -261,6 +261,15 @@ ENGLISH_POWER_WORDS = (
     "monkey",
     "king",
     "graphics",
+    "headshot",
+    "choke",
+    "scam",
+    "troll",
+    "carry",
+    "cooked",
+    "cinema",
+    "aura",
+    "sigma",
 )
 
 
@@ -278,6 +287,7 @@ HINDI_POWER_WORDS = (
     "yaar",
     "abey",
     "bhaag",
+    "bhag",
     "gaya",
     "khatam",
     "op",
@@ -289,6 +299,13 @@ HINDI_POWER_WORDS = (
     "hatt",
     "bc",
     "arre",
+    "pagal",
+    "pel",
+    "gaddari",
+    "scene",
+    "khatarnak",
+    "dhamaka",
+    "nikal",
     "भाई",
     "क्या",
     "देखो",
@@ -307,7 +324,33 @@ HINDI_POWER_WORDS = (
 )
 
 
-VIRAL_POWER_WORDS = set(ENGLISH_POWER_WORDS) | set(HINDI_POWER_WORDS)
+GLOBAL_POWER_WORDS = (
+    # Spanish / Portuguese / French / German / Indonesian viral stream slang
+    "loco",
+    "vamos",
+    "brutal",
+    "epico",
+    "increible",
+    "caralho",
+    "mano",
+    "insano",
+    "lendario",
+    "mitou",
+    "incroyable",
+    "dinguerie",
+    "masterclass",
+    "krank",
+    "digga",
+    "ehrenlos",
+    "gila",
+    "anjir",
+    "parah",
+    "mantap",
+    "bantai",
+)
+
+
+VIRAL_POWER_WORDS = set(ENGLISH_POWER_WORDS) | set(HINDI_POWER_WORDS) | set(GLOBAL_POWER_WORDS)
 
 
 # Multi-word triggers, matched on the joined word stream. Longer phrases first, so "are you kidding me"
@@ -316,6 +359,7 @@ ENGLISH_TRIGGER_PHRASES = (
     "are you kidding me",
     "are you kidding",
     "are you serious",
+    "chat is this real",
     "he's cheating",
     "oh my god",
     "wait for it",
@@ -324,6 +368,9 @@ ENGLISH_TRIGGER_PHRASES = (
     "hot take",
     "what the",
     "no way",
+    "no cap",
+    "locked in",
+    "on god",
     "let's go",
     "clip that",
     "clip it",
@@ -336,6 +383,12 @@ ENGLISH_TRIGGER_PHRASES = (
 
 HINDI_TRIGGER_PHRASES = (
     "mar gaya",
+    "mar gaye",
+    "pel diya",
+    "kya scene",
+    "bhai sahab",
+    "abey yaar",
+    "end tak",
     "bap re",
     "baap re",
     "kya baat",
