@@ -5,7 +5,7 @@ from http.server import ThreadingHTTPServer
 from dashboard import make_handler, snapshot, render
 
 def handler(db, password):
-    if len(password)<24: raise ValueError('Dashboard password must have at least 24 characters')
+    if len(password)<10: raise ValueError('Dashboard password must have at least 10 characters')
     expected='Basic '+base64.b64encode(('admin:'+password).encode()).decode()
     lock=threading.Lock()
     result={'status':'not_run'}
