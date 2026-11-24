@@ -15,4 +15,9 @@ class RenderTest(unittest.TestCase):
                     self.assertEqual(urllib.request.urlopen(urllib.request.Request(url+'/',headers={'Authorization':auth})).status,200)
                     with self.assertRaises(urllib.error.HTTPError) as e: urllib.request.urlopen(urllib.request.Request(url+'/control',data=b'action=start',headers={'Authorization':auth}))
                     self.assertEqual(e.exception.code,405)
+                    for headers,code in [({},401),({'Authorization':auth},403),({'Authorization':auth,'X-Pilot-Confirm':'video-only'},415)]:
+                        with self.assertRaises(urllib.error.HTTPError) as e:
+                            urllib.request.urlopen(urllib.request.Request(url+'/video-test',data=b'x',headers=headers))
+                        self.assertEqual(e.exception.code,code)
+                    self.assertEqual(urllib.request.urlopen(urllib.request.Request(url+'/?v=40',headers={'Authorization':auth})).status,200)
                 finally: s.shutdown(); t.join()

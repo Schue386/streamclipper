@@ -11,7 +11,7 @@ def benchmark(source, seconds=75, bounded=True):
     start=time.monotonic()
     with tempfile.TemporaryDirectory() as d:
         out=Path(d)/'pilot.mp4'
-        cmd=['ffmpeg','-nostdin','-xerror','-v','error','-threads','1','-i',str(source),'-t',str(seconds),'-filter_threads','1','-vf','scale=540:960:force_original_aspect_ratio=decrease,pad=540:960:(ow-iw)/2:(oh-ih)/2','-c:v','libx264','-threads','1','-preset','ultrafast','-pix_fmt','yuv420p','-c:a','aac','-movflags','+faststart',str(out)]
+        cmd=['ffmpeg','-nostdin','-xerror','-v','error','-threads','1','-protocol_whitelist','file','-f','mov','-i',str(source),'-t',str(seconds),'-filter_threads','1','-vf','scale=540:960:force_original_aspect_ratio=decrease,pad=540:960:(ow-iw)/2:(oh-ih)/2','-c:v','libx264','-threads','1','-preset','ultrafast','-pix_fmt','yuv420p','-c:a','aac','-movflags','+faststart',str(out)]
         subprocess.run(cmd,check=True,timeout=600,preexec_fn=limit if bounded else None)
         info=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_format','-show_streams','-of','json',str(out)],timeout=30))
         return {'elapsed_seconds':round(time.monotonic()-start,2),'duration':float(info['format']['duration']),'bytes':out.stat().st_size,'child_peak_rss_kib':resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss,'address_space_limit_mib':512 if bounded else None,'asr_tested':False,'render_cloud_tested':False}

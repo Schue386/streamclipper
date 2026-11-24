@@ -9,20 +9,22 @@ def handler(db, password):
     expected='Basic '+base64.b64encode(('admin:'+password).encode()).decode()
     lock=threading.Lock()
     result={'status':'not_run'}
-    def pilot():
+    def pilot(upload=None):
         try:
             with tempfile.TemporaryDirectory() as d:
-                source=str(Path(d)/'test.mp4')
-                subprocess.run(['ffmpeg','-nostdin','-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=24','-t','75','-c:v','libx264','-threads','1','-preset','ultrafast',source],check=True,timeout=300)
+                source=upload or str(Path(d)/'test.mp4')
+                if upload is None: subprocess.run(['ffmpeg','-nostdin','-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=24','-t','75','-c:v','libx264','-threads','1','-preset','ultrafast',source],check=True,timeout=300)
                 code='import json,sys; from render_benchmark import benchmark; print(json.dumps(benchmark(sys.argv[1],bounded=False)))'
                 output=subprocess.check_output([sys.executable,'-c',code,source],cwd=str(Path(__file__).resolve().parent),timeout=660)
                 result.update(status='passed',measurement=json.loads(output))
         except Exception as exc:
             result.update(status='failed',error=type(exc).__name__)
-        finally: lock.release()
+        finally:
+            if upload is not None: Path(upload).unlink(missing_ok=True)
+            lock.release()
     class Handler(make_handler(db)):
         def do_GET(self):
-            self.path = self.path.split("?", 1)[0]
+            self.path=self.path.split("?",1)[0]
             if self.path=='/health':
                 return self.respond(200,b'{"status":"ok"}','application/json')
             if not hmac.compare_digest(self.headers.get('Authorization','').encode(),expected.encode()):
@@ -41,8 +43,32 @@ def handler(db, password):
             page=page.replace(b'</body>',b'<p><a href="/pilot">Pilot-Ergebnis</a> | <a href="/resources">Ressourcen</a></p><form method="post" action="/pilot"><button>75-Sekunden-Test starten</button></form></body>')
             return self.respond(200,page)
         def do_POST(self):
-            if self.path!='/pilot': return self.respond(405,b'Read-only pilot')
+            if self.path not in ('/pilot','/video-test'): return self.respond(405,b'Read-only pilot')
             if not hmac.compare_digest(self.headers.get('Authorization','').encode(),expected.encode()): return self.respond(401,b'Unauthorized')
+            if self.path=='/video-test':
+                if self.headers.get('X-Pilot-Confirm')!='video-only': return self.respond(403,b'Confirmation required')
+                if self.headers.get('Content-Type')!='video/mp4' or self.headers.get('Transfer-Encoding'): return self.respond(415,b'MP4 required')
+                try: size=int(self.headers.get('Content-Length','0'))
+                except ValueError: return self.respond(400,b'Invalid length')
+                if not 0<size<=50*1024**2: return self.respond(413,b'Maximum 50 MiB')
+                if not lock.acquire(blocking=False): return self.respond(409,b'Pilot running')
+                upload=None
+                try:
+                    self.connection.settimeout(30)
+                    with tempfile.NamedTemporaryFile(suffix='.mp4',delete=False) as f:
+                        upload=f.name
+                        remaining=size
+                        while remaining:
+                            chunk=self.rfile.read(min(65536,remaining))
+                            if not chunk: raise ValueError('Incomplete upload')
+                            f.write(chunk); remaining-=len(chunk)
+                    result.clear(); result.update(status='running',source='uploaded_video')
+                    threading.Thread(target=pilot,args=(upload,),daemon=True).start()
+                except Exception:
+                    if upload: Path(upload).unlink(missing_ok=True)
+                    lock.release()
+                    return self.respond(400,b'Upload failed')
+                return self.respond(202,b'Video test started')
             if self.headers.get('X-Pilot-Confirm')!='synthetic-only' and not (self.headers.get('Origin') and self.headers.get('Origin')=='https://'+os.environ.get('RENDER_EXTERNAL_HOSTNAME','invalid') and self.headers.get('Sec-Fetch-Site')=='same-origin'): return self.respond(403,b'Confirmation required')
             if not lock.acquire(blocking=False): return self.respond(409,b'Pilot running')
             result.clear(); result.update(status='running')
