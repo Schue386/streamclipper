@@ -1,0 +1,14 @@
+127.0.0.1 - - [24/Nov/2026 03:18:25] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [24/Nov/2026 03:18:25] "GET /missing HTTP/1.1" 404 -
+127.0.0.1 - - [24/Nov/2026 03:18:25] "POST /control HTTP/1.1" 403 -
+127.0.0.1 - - [24/Nov/2026 03:18:25] "POST /control HTTP/1.1" 303 -
+127.0.0.1 - - [24/Nov/2026 03:18:25] "POST /control HTTP/1.1" 303 -
+127.0.0.1 - - [24/Nov/2026 03:18:25] "POST /control HTTP/1.1" 400 -
+Stream poll failed: [Errno 2] No such file or directory: '/tmp/tmpg6whjajs/missing.json'
+/usr/lib/python3.13/unittest/mock.py:2247: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f531bf75b70>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+----------------------------------------------------------------------
+Ran 111 tests in 1.870s
+
+OK

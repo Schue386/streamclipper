@@ -203,6 +203,10 @@ def cmd_live(args):
         "content": opts["content"],
         "caption_style": opts["caption_style"],
     }
+    if args.long_clips:
+        st.update(min_dur=61.0, max_dur=90.0, target_dur=75.0)
+        opts["timeline_limit"] = 90.0
+        opts["timeline_min"] = 61.0
     ring = Ring(out / "buffer", keep_s)
     ingest = Ingest(args.url, kind, ring, out / "logs")
     transcriber = None
@@ -263,6 +267,7 @@ def cmd_live(args):
 
 def add_live_parser(sub, add_layout_flags, add_draft_flags, llm_providers, default_min_score):
     lv = sub.add_parser("live", help="Clip a live Twitch, YouTube or Kick stream while it is still running")
+    lv.add_argument("--long-clips", action="store_true", help="Target 61–90 second clips; final duration may vary")
     lv.add_argument("--url", required=True, help="Live stream link (Twitch, YouTube Live, Kick), .m3u8, or a file")
     lv.add_argument("--out", required=True, help="Output folder (clips, clips.json/csv, index.html, buffer)")
     lv.add_argument("--buffer-min", type=float, default=15.0, help="Minutes of stream kept on disk (default 15)")

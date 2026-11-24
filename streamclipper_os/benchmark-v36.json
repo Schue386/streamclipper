@@ -1,0 +1,20 @@
+{
+  "bounded": {
+    "elapsed_seconds": 6.86,
+    "duration": 75.0,
+    "bytes": 1305916,
+    "child_peak_rss_kib": 99648,
+    "address_space_limit_mib": 512,
+    "asr_tested": false,
+    "render_cloud_tested": false
+  },
+  "unbounded": {
+    "elapsed_seconds": 5.18,
+    "duration": 75.0,
+    "bytes": 1305916,
+    "child_peak_rss_kib": 99800,
+    "address_space_limit_mib": null,
+    "asr_tested": false,
+    "render_cloud_tested": false
+  }
+}

@@ -367,6 +367,8 @@ def clip_stream(args) -> dict:
     work_dir.mkdir(parents=True, exist_ok=True)
     transcribe = True if args.transcribe else (False if args.no_transcribe else None)
     st = _discover_settings(args, transcribe)
+    if st["min_dur"] >= 61:
+        opts.update(timeline_limit=st["max_dur"], timeline_min=st["min_dur"])
     st["content"] = opts["content"]
     st["caption_style"] = opts["caption_style"]
     if opts.get("translate_to") == "en":
@@ -600,7 +602,11 @@ def make_stream_clip(
             segs = cut_black(segs, spans, words)
     verbatim = (win_file, ws, 0.0, wmeta["dur"], asr, work_dir / "analysis")
     segs, words, removed = _apply_fillers(segs, words, clip["peak"], opts, f"Clip {idx + 1}", verbatim, ws)
-    segs = fit_timeline(segs, words)
+    segs = fit_timeline(segs, words, limit=opts.get("timeline_limit", 59.5))
+    if opts.get("timeline_min"):
+        length = sum(s["cut_end"] - s["cut_start"] for s in segs)
+        if not opts["timeline_min"] <= length <= opts["timeline_limit"]:
+            raise SkipClip(f"Timeline duration {length:.2f}s outside configured bounds")
     hook = hook_override or clip["hook_headline"]
     target_lang = opts.get("translate_to") or ""
     already_en = target_lang == "en" and (asr or {}).get("task") == "translate"

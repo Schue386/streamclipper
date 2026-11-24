@@ -154,6 +154,11 @@ def build_candidates(
         isl = i_idx(p)
         near_w = w_idx(p)
         segs = snap_segments(trim_pauses(win, isl, st["min_pause"], (p - 3.0, p + 1.5)), near_w, 0.0, dur)
+        if st["min_dur"] >= 61:
+            if not st["min_dur"] <= win["end"] - win["start"] <= st["max_dur"]:
+                continue
+            if sum(x["src_e"] - x["src_s"] for x in segs) < st["min_dur"] + 0.2:
+                segs = [{"src_s": win["start"], "src_e": win["end"], "kind": "payoff", "fade_ms": 12}]
         cw = [w for w in near_w if w["e"] > win["start"] and w["s"] < win["end"]]
         chat = window_score(chat_sig, p) if chat_sig is not None else None
         hsig = hud.window(win) if hud is not None and content != "talk" else None

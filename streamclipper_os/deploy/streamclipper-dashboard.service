@@ -1,0 +1,23 @@
+[Unit]
+Description=StreamClipper OS loopback-only dashboard
+After=streamclipper-os.service
+
+[Service]
+Type=simple
+User=streamclipper
+Group=streamclipper
+WorkingDirectory=/opt/streamclipper-os/streamclipper_os
+ExecStart=/opt/streamclipper-os/.venv/bin/python /opt/streamclipper-os/streamclipper_os/dashboard.py --db /var/lib/streamclipper-os/state.sqlite3 --port 8765
+Restart=on-failure
+RestartSec=10
+StateDirectory=streamclipper-os
+Environment=PATH=/opt/streamclipper-os/.venv/bin:/usr/bin:/bin
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/streamclipper-os
+
+[Install]
+WantedBy=multi-user.target

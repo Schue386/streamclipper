@@ -161,6 +161,15 @@ def story_window(
         start = back if end - back <= max_dur else off_word(start, words, +1)
     start = max(0.0, start)
 
+    if min_dur >= 61 and dur >= min_dur:
+        # Keep real contiguous context, including after early payoffs.
+        target = min(max_dur, max(min_dur + 0.5, target_dur), dur)
+        desired = max(0.0, min(p - target * 0.65, dur - target))
+        candidates = [start_at(b) for b in bounds if clean(b)]
+        candidates = [x for x in candidates if 0 <= x <= dur - target and x <= p <= x + target]
+        start = min(candidates, key=lambda x: abs(x - desired)) if candidates and min(abs(x-desired) for x in candidates) <= 5 else desired
+        end = start + target
+
     pay0, pay1 = max(start + 0.5, p - 1.0), min(end, p + 1.0)
     t_t = start + 0.6 * (pay0 - start)
     later = [b["ge"] for b in bounds if start + 0.4 * (pay0 - start) <= b["ge"] <= p - 3.0]

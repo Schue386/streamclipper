@@ -1,0 +1,33 @@
+[Unit]
+Description=StreamClipper OS independent recording coordinator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=streamclipper
+Group=streamclipper
+WorkingDirectory=/opt/streamclipper-os/streamclipper_os
+EnvironmentFile=-/etc/streamclipper-os.env
+ExecStart=/opt/streamclipper-os/.venv/bin/python /opt/streamclipper-os/streamclipper_os/service.py --db /var/lib/streamclipper-os/state.sqlite3 --out /var/lib/streamclipper-os/clips --workers 1 --interval 120 --tick 10
+Restart=on-failure
+RestartSec=15
+StateDirectory=streamclipper-os
+Environment=PATH=/opt/streamclipper-os/.venv/bin:/usr/bin:/bin
+Environment=STREAMCLIPPER_MIN_FREE_GIB=20
+CPUQuota=180%
+MemoryHigh=7G
+MemoryMax=9G
+Environment=OMP_NUM_THREADS=2
+Environment=OPENBLAS_NUM_THREADS=2
+Environment=MKL_NUM_THREADS=2
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/streamclipper-os
+# No --execute: production recordings require explicit admin change after validation.
+
+[Install]
+WantedBy=multi-user.target

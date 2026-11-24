@@ -1,0 +1,12 @@
+{
+  "status": "passed",
+  "measurement": {
+    "elapsed_seconds": 3.93,
+    "duration": 75.0,
+    "bytes": 17811034,
+    "child_peak_rss_kib": 95648,
+    "address_space_limit_mib": null,
+    "asr_tested": false,
+    "render_cloud_tested": false
+  }
+}

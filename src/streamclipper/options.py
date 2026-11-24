@@ -280,6 +280,8 @@ def clip_layout(src: Path, meta: dict, opts: dict, start: float = None, end: flo
     """
     vw, vh = meta["width"], meta["height"]
     layout = opts["layout"]
+    if vw < vh and layout in CAM_LAYOUTS and not opts.get("cam_crop"):
+        return dict(opts, layout="full"), None, None, "layout: portrait -> full (preserve composition)"
     if layout == "speaker":  # podcasts: the panel render tracks the faces shot by shot
         return opts, None, None, "layout: speaker (face tracking per camera shot)"
     if opts.get("cam_crop") or vw < vh or layout == "hook-grabber":
@@ -289,8 +291,11 @@ def clip_layout(src: Path, meta: dict, opts: dict, start: float = None, end: flo
     e = meta["dur"] if end is None else end
     res = classify_layout(src, s, e, vw, vh)
     if res is None:
+        if layout in CAM_LAYOUTS:
+            game = box_to_norm(opts["game_crop"], vw, vh) if opts.get("game_crop") else None
+            return dict(opts, layout="full"), None, game, "layout: full (face detection unavailable; no guessed webcam)"
         cam, game = clip_boxes(src, meta, opts)
-        return opts, cam, game, f"layout: {layout} (skin heuristic; pip install -e .[vision] for face detection)"
+        return opts, cam, game, f"layout: {layout} (face detection unavailable)"
     game = box_to_norm(opts["game_crop"], vw, vh) if opts.get("game_crop") else None
     kind = res["kind"]
     if kind == "blank":
