@@ -22,6 +22,7 @@ def handler(db, password):
         finally: lock.release()
     class Handler(make_handler(db)):
         def do_GET(self):
+            self.path = self.path.split("?", 1)[0]
             if self.path=='/health':
                 return self.respond(200,b'{"status":"ok"}','application/json')
             if not hmac.compare_digest(self.headers.get('Authorization','').encode(),expected.encode()):
