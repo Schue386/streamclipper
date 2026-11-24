@@ -14,8 +14,8 @@ def handler(db, password):
             with tempfile.TemporaryDirectory() as d:
                 source=upload or str(Path(d)/'test.mp4')
                 if upload is None: subprocess.run(['ffmpeg','-nostdin','-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=24','-t','75','-c:v','libx264','-threads','1','-preset','ultrafast',source],check=True,timeout=300)
-                code='import json,sys; from render_benchmark import benchmark; print(json.dumps(benchmark(sys.argv[1],bounded=False)))'
-                output=subprocess.check_output([sys.executable,'-c',code,source],cwd=str(Path(__file__).resolve().parent),timeout=660)
+                code='import json,sys,os; from render_benchmark import benchmark; from highlight_scan import scan; r=benchmark(sys.argv[1],bounded=False); r["render_cloud_tested"]=bool(os.environ.get("RENDER_EXTERNAL_HOSTNAME")); r["highlights"]=scan(sys.argv[1]) if sys.argv[2]=="1" else None; print(json.dumps(r))'
+                output=subprocess.check_output([sys.executable,'-c',code,source,'1' if upload else '0'],cwd=str(Path(__file__).resolve().parent),timeout=1100)
                 result.update(status='passed',measurement=json.loads(output))
         except Exception as exc:
             result.update(status='failed',error=type(exc).__name__)
