@@ -23,6 +23,15 @@ def handler(db, password):
             if upload is not None: Path(upload).unlink(missing_ok=True)
             lock.release()
     class Handler(make_handler(db)):
+        def do_HEAD(self):
+            if self.path.split("?",1)[0] == "/health":
+                self.send_response(200)
+                self.send_header("Content-Type","application/json")
+                self.send_header("Cache-Control","no-store")
+                self.end_headers()
+            else:
+                self.send_response(405)
+                self.end_headers()
         def do_GET(self):
             self.path=self.path.split("?",1)[0]
             if self.path=='/health':
