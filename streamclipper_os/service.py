@@ -15,7 +15,7 @@ import urllib.error
 from stream_monitor import connect, check
 from kick_monitor import check as check_kick
 from youtube_monitor import check as check_youtube
-from autopilot import enqueue_events
+from clip_jobs import enqueue_detected
 from supervisor import Supervisor
 from control import enabled as control_enabled
 
@@ -27,7 +27,7 @@ def cycle(db, supervisor, *, demo_file=None, poll=True, upload=False, sender=Non
     if poll:
         try:
             events=check(db,demo_file)
-            result.update(poll='ok',new_streams=len(events),queued=enqueue_events(db,events))
+            result.update(poll='ok',new_streams=len(events),queued=enqueue_detected(db) if control_enabled(db) else 0)
         except (ValueError,KeyError,TypeError,sqlite3.Error,urllib.error.URLError,
                 TimeoutError,OSError,json.JSONDecodeError) as exc:
             result.update(poll='failed',poll_error=f'{type(exc).__name__}: {exc}'[:300])
@@ -60,7 +60,7 @@ def main():
     p.add_argument('--demo-file')
     p.add_argument('--execute',action='store_true',help='Permit real recording if control is ON')
     p.add_argument('--youtube-upload',action='store_true',help='Deprecated; use youtube_daemon.py instead')
-    p.add_argument('--workers',type=int,default=2)
+    p.add_argument('--workers',type=int,default=1)
     p.add_argument('--timeout',type=int,default=7200)
     p.add_argument('--interval',type=int,default=120,help='Twitch poll seconds, >=60')
     p.add_argument('--tick',type=int,default=10,help='Supervisor tick seconds, >=1')
@@ -79,8 +79,7 @@ def main():
             while True:
                 current=time.monotonic()
                 do_poll=current>=next_poll
-                # A disabled Autopilot also disables discovery; do not generate new jobs.
-                do_poll=do_poll and control_enabled(db)
+                # Discovery remains active independently of recording.
                 result=cycle(db,supervisor,demo_file=args.demo_file,poll=do_poll,upload=False)
                 if do_poll:next_poll=current+args.interval
                 print(json.dumps(result,ensure_ascii=False),flush=True)
