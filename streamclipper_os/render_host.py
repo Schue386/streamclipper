@@ -112,6 +112,7 @@ def handler(db, password):
     return Handler
 
 if __name__=='__main__':
+    threading.Thread(target=subprocess.run,args=([sys.executable,"-m","yt_dlp","--ignore-config","--no-playlist","--skip-download","--socket-timeout","10","--retries","0","--print","title","--print","duration","https://www.youtube.com/watch?v=_ImIYCyuUSU"],),kwargs={"timeout":60,"check":False},daemon=True).start()
     os.umask(0o077)
     with ThreadingHTTPServer(('0.0.0.0',int(os.environ.get('PORT','10000'))),handler('/tmp/streamclipper.sqlite3',os.environ['DASHBOARD_PASSWORD'])) as server:
         server.serve_forever()
