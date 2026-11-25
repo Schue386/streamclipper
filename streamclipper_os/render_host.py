@@ -10,16 +10,32 @@ def handler(db, password):
     lock=threading.Lock()
     result={'status':'not_run'}
     def pilot(upload=None):
+        stop=threading.Event(); samples=[]
+        def monitor():
+            while not stop.is_set():
+                try: samples.append(int(Path('/sys/fs/cgroup/memory.current').read_text()))
+                except (OSError,ValueError): pass
+                stop.wait(0.25)
+        watcher=threading.Thread(target=monitor,daemon=True); watcher.start()
         try:
             with tempfile.TemporaryDirectory() as d:
                 source=upload or str(Path(d)/'test.mp4')
                 if upload is None: subprocess.run(['ffmpeg','-nostdin','-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=24','-t','75','-c:v','libx264','-threads','1','-preset','ultrafast',source],check=True,timeout=300)
                 code='import json,sys,os; from render_benchmark import benchmark; from highlight_scan import scan; r=benchmark(sys.argv[1],bounded=False); r["render_cloud_tested"]=bool(os.environ.get("RENDER_EXTERNAL_HOSTNAME")); r["highlights"]=scan(sys.argv[1]) if sys.argv[2]=="1" else None; print(json.dumps(r))'
                 output=subprocess.check_output([sys.executable,'-c',code,source,'1' if upload else '0'],cwd=str(Path(__file__).resolve().parent),timeout=1100)
-                result.update(status='passed',measurement=json.loads(output))
+                measurement=json.loads(output)
+                if upload and os.environ.get('ASR_MODEL_DIR'):
+                    try:
+                        raw=subprocess.check_output([sys.executable,str(Path(__file__).resolve().with_name('asr_benchmark.py')),source,os.environ['ASR_MODEL_DIR']],timeout=300)
+                        measurement['asr']=json.loads(raw); measurement['asr_tested']=True
+                    except (subprocess.SubprocessError,OSError,ValueError) as exc:
+                        measurement['asr']={'status':'failed','error':type(exc).__name__}
+                result.update(status='passed',measurement=measurement)
         except Exception as exc:
             result.update(status='failed',error=type(exc).__name__)
         finally:
+            stop.set(); watcher.join()
+            result["sampled_cgroup_peak_bytes"]=max(samples,default=None)
             if upload is not None: Path(upload).unlink(missing_ok=True)
             lock.release()
     class Handler(make_handler(db)):

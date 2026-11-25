@@ -11,11 +11,14 @@ def benchmark(source, model, seconds=30):
     start=time.monotonic()
     with tempfile.TemporaryDirectory() as d:
         wav=Path(d)/'audio.wav'
-        subprocess.run(['ffmpeg','-nostdin','-v','error','-threads','1','-i',str(source),'-t',str(seconds),'-vn','-ac','1','-ar','16000','-c:a','pcm_s16le',str(wav)],check=True,timeout=120)
+        subprocess.run(['ffmpeg','-nostdin','-v','error','-threads','1','-protocol_whitelist','file','-f','mov','-i',str(source),'-t',str(seconds),'-vn','-ac','1','-ar','16000','-c:a','pcm_s16le',str(wav)],check=True,timeout=120)
         engine=WhisperModel(str(model),device='cpu',compute_type='int8',cpu_threads=1,num_workers=1,local_files_only=True)
         segments,info=engine.transcribe(read_wav16k(wav),beam_size=1,best_of=1,word_timestamps=True,vad_filter=False)
-        words=sum(len(s.words or []) for s in segments)
-        return {'words':words,'language':info.language,'elapsed_seconds':round(time.monotonic()-start,2),'peak_rss_kib':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,'cloud_tested':False}
+        captions=[]; words=0
+        for s in segments:
+            words+=len(s.words or [])
+            if s.text.strip(): captions.append({"start":round(s.start,3),"end":round(s.end,3),"text":s.text.strip()})
+        return {'words':words,'captions':captions,'language':info.language,'elapsed_seconds':round(time.monotonic()-start,2),'peak_rss_kib':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,'cloud_tested':False}
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(); p.add_argument('source'); p.add_argument('model'); p.add_argument('--seconds',type=int,default=30); a=p.parse_args(); print(json.dumps(benchmark(a.source,a.model,a.seconds)))

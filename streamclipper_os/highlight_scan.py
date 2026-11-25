@@ -18,14 +18,15 @@ def has_audio(source):
 def rank(motion,loud):
     baseline=statistics.median(motion) if motion else 0
     audio_base=statistics.median(loud) if loud else 0
-    candidates=[]
+    candidates=[]; scores=[]
     for i,m in enumerate(motion):
         a=loud[i+1] if i+1<len(loud) else 0
         score=min(1,max(0,m-baseline)*5)+min(1,max(0,a-audio_base)*5)
+        scores.append(score)
         if score>=0.15:
             candidates.append({'second':(i+1)/2,'score':round(score,3),'motion':round(m,3),'audio_rms':round(a,3),'scene_change_proxy':m>=0.25})
     chosen=[]
     for c in sorted(candidates,key=lambda c:c['score'],reverse=True):
         if all(abs(c['second']-p['second'])>=10 for p in chosen): chosen.append(c)
         if len(chosen)==5: break
-    return {'method':'audiovisual_heuristic','scan_limit_seconds':180,'audio_available':bool(loud),'candidates':chosen}
+    return {'method':'audiovisual_heuristic','scan_limit_seconds':180,'audio_available':bool(loud),'diagnostics':{'threshold':0.15,'motion_samples':len(motion),'audio_samples':len(loud),'motion_median':round(baseline,4),'audio_median':round(audio_base,4),'max_score':round(max(scores,default=0),4)},'candidates':chosen}
