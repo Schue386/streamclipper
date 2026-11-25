@@ -1,5 +1,5 @@
 """Explicit offline ASR pilot; never downloads a model or publishes content."""
-import argparse, json, resource, subprocess, tempfile, time
+import os, argparse, json, resource, subprocess, tempfile, time
 from pathlib import Path
 
 def benchmark(source, model, seconds=30):
@@ -17,8 +17,8 @@ def benchmark(source, model, seconds=30):
         captions=[]; words=0
         for s in segments:
             words+=len(s.words or [])
-            if s.text.strip(): captions.append({"start":round(s.start,3),"end":round(s.end,3),"text":s.text.strip()})
-        return {'words':words,'captions':captions,'language':info.language,'elapsed_seconds':round(time.monotonic()-start,2),'peak_rss_kib':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,'cloud_tested':False}
+            if any(c.isalnum() for c in s.text): captions.append({"start":round(s.start,3),"end":round(s.end,3),"text":s.text.strip()})
+        return {'words':words,'captions':captions,'language':info.language,'elapsed_seconds':round(time.monotonic()-start,2),'peak_rss_kib':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,'cloud_tested':bool(os.environ.get('RENDER_EXTERNAL_HOSTNAME'))}
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(); p.add_argument('source'); p.add_argument('model'); p.add_argument('--seconds',type=int,default=30); a=p.parse_args(); print(json.dumps(benchmark(a.source,a.model,a.seconds)))

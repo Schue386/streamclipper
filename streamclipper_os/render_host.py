@@ -9,6 +9,7 @@ def handler(db, password):
     expected='Basic '+base64.b64encode(('admin:'+password).encode()).decode()
     lock=threading.Lock()
     result={'status':'not_run'}
+    preview=Path(tempfile.mkdtemp(prefix='sc-preview-'))/'clip.mp4'
     def pilot(upload=None):
         stop=threading.Event(); samples=[]
         def monitor():
@@ -24,14 +25,15 @@ def handler(db, password):
                 code='import json,sys,os; from render_benchmark import benchmark; from highlight_scan import scan; r=benchmark(sys.argv[1],bounded=False); r["render_cloud_tested"]=bool(os.environ.get("RENDER_EXTERNAL_HOSTNAME")); r["highlights"]=scan(sys.argv[1]) if sys.argv[2]=="1" else None; print(json.dumps(r))'
                 output=subprocess.check_output([sys.executable,'-c',code,source,'1' if upload else '0'],cwd=str(Path(__file__).resolve().parent),timeout=1100)
                 measurement=json.loads(output)
-                if upload and os.environ.get('ASR_MODEL_DIR'):
-                    try:
-                        raw=subprocess.check_output([sys.executable,str(Path(__file__).resolve().with_name('asr_benchmark.py')),source,os.environ['ASR_MODEL_DIR']],timeout=300)
-                        measurement['asr']=json.loads(raw); measurement['asr_tested']=True
-                    except (subprocess.SubprocessError,OSError,ValueError) as exc:
-                        measurement['asr']={'status':'failed','error':type(exc).__name__}
+                if upload:
+                    code='import json,sys,os; from clip_preview import produce; print(json.dumps(produce(sys.argv[1],sys.argv[2],json.loads(sys.argv[3]),os.environ.get("ASR_MODEL_DIR"))))'
+                    raw=subprocess.check_output([sys.executable,'-c',code,source,str(preview),json.dumps(measurement['highlights']['candidates'])],cwd=str(Path(__file__).resolve().parent),timeout=1600)
+                    measurement['preview']=json.loads(raw)
+                    measurement['asr']=measurement['preview']['asr']
+                    measurement['asr_tested']=bool(measurement['asr'] and 'captions' in measurement['asr'])
                 result.update(status='passed',measurement=measurement)
         except Exception as exc:
+            preview.unlink(missing_ok=True)
             result.update(status='failed',error=type(exc).__name__)
         finally:
             stop.set(); watcher.join()
@@ -54,6 +56,13 @@ def handler(db, password):
                 return self.respond(200,b'{"status":"ok"}','application/json')
             if not hmac.compare_digest(self.headers.get('Authorization','').encode(),expected.encode()):
                 self.send_response(401); self.send_header('WWW-Authenticate','Basic realm="StreamClipper"'); self.send_header('Content-Length','0'); self.end_headers(); return
+            if self.path=='/clip.mp4':
+                if result.get('status')!='passed' or not result.get('measurement',{}).get('preview') or not preview.is_file(): return self.respond(404,b'No preview')
+                try:
+                    with preview.open('rb') as f:
+                        self.send_response(200); self.send_header('Content-Type','video/mp4'); self.send_header('Content-Length',str(os.fstat(f.fileno()).st_size)); self.send_header('Content-Disposition','attachment; filename="streamclipper-preview.mp4"'); self.send_header('Cache-Control','no-store'); self.end_headers(); shutil.copyfileobj(f,self.wfile,65536)
+                except (OSError,ConnectionError): pass
+                return
             if self.path=='/pilot':
                 return self.respond(200,json.dumps(result).encode(),'application/json')
             if self.path=='/resources':
@@ -65,7 +74,7 @@ def handler(db, password):
                 return self.respond(200,json.dumps({'memory':memory,'disk_free':shutil.disk_usage('/tmp').free,'storage':'ephemeral','recording':False}).encode(),'application/json')
             if self.path!='/': return self.respond(404,b'Not found')
             page=render(snapshot(db)).replace(b'Lokales Dashboard \xc2\xb7 keine Cloud-Verbindung',b'Render Pilot - nur lesend, fluechtiger Speicher').replace(b'<form method="post"',b'<form hidden method="post"')
-            page=page.replace(b'</body>',b'<p><a href="/pilot">Pilot-Ergebnis</a> | <a href="/resources">Ressourcen</a></p><form method="post" action="/pilot"><button>75-Sekunden-Test starten</button></form></body>')
+            page=page.replace(b'</body>',b'<p><a href="/pilot">Pilot-Ergebnis</a> | <a href="/clip.mp4">Clip herunterladen</a> | <a href="/resources">Ressourcen</a></p><form method="post" action="/pilot"><button>75-Sekunden-Test starten</button></form></body>')
             return self.respond(200,page)
         def do_POST(self):
             if self.path not in ('/pilot','/video-test'): return self.respond(405,b'Read-only pilot')
@@ -87,6 +96,7 @@ def handler(db, password):
                             chunk=self.rfile.read(min(65536,remaining))
                             if not chunk: raise ValueError('Incomplete upload')
                             f.write(chunk); remaining-=len(chunk)
+                    preview.unlink(missing_ok=True)
                     result.clear(); result.update(status='running',source='uploaded_video')
                     threading.Thread(target=pilot,args=(upload,),daemon=True).start()
                 except Exception:
