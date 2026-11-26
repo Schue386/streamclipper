@@ -83,6 +83,26 @@ def main():
             jobs.prepare_tracking(db)
             import turso_catalog as catalog
             catalog.restore_catalog(db)
+            import turso_media as media
+            media.restore_media(db)
+
+            import os
+            from threading import Thread
+
+            verify_id = os.getenv(
+                "STREAMCLIPPER_VERIFY_CLIP_ID", ""
+            )
+
+            if verify_id and os.getenv(
+                "STREAMCLIPPER_V58_TEST"
+            ) != "1":
+                Thread(
+                    target=media.verify_on_start,
+                    args=(args.db, verify_id),
+                    daemon=True
+                ).start()
+
+
             catalog.prepare_tracking(db)
 
             import os

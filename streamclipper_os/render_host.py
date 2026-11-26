@@ -125,7 +125,10 @@ if __name__=='__main__':
     print("TURSO: PERSISTENT STORAGE READY", flush=True)
     from storage_probe import probe
 
-    if os.getenv("STREAMCLIPPER_V58_TEST") != "1":
+    if (
+        os.getenv("STREAMCLIPPER_V58_TEST") != "1"
+        and not os.getenv("STREAMCLIPPER_VERIFY_CLIP_ID")
+    ):
         threading.Thread(
             target=probe,
             daemon=True

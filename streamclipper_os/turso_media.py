@@ -77,3 +77,165 @@ def record_verified(clip_id, receipt):
     print("TURSO: VERIFIED VIDEO REGISTERED", flush=True)
 
     return True
+
+
+def restore_media(db):
+    """Restore metadata without trusting old local paths."""
+    prepare()
+
+    columns = (
+        "clip_id", "provider", "remote_path",
+        "sha256", "file_size", "verified_at"
+    )
+
+    fields = ", ".join(columns)
+
+    result = execute([
+        ("SELECT " + fields + " FROM clip_media", ())
+    ])[0]
+
+    rows = [
+        tuple(decode_value(cell) for cell in row)
+        for row in result["rows"]
+    ]
+
+    with db:
+        db.execute(SCHEMA)
+
+        if db.execute(
+            "SELECT COUNT(*) FROM clip_media"
+        ).fetchone()[0]:
+            raise StoreError("Restore requires empty media table")
+
+        for row in rows:
+            if len(row) != 6:
+                raise StoreError("Invalid media row")
+
+            cid, provider, remote, sha, size, verified = row
+
+            if (
+                not isinstance(cid, str)
+                or not re.fullmatch(r"[a-f0-9]{32}", cid)
+                or provider != "mega"
+                or not isinstance(sha, str)
+                or not re.fullmatch(r"[a-f0-9]{64}", sha)
+                or remote != REMOTE + "/" + sha + ".mp4"
+                or type(size) is not int
+                or not 0 < size <= MAX_FILE
+                or not verified
+            ):
+                raise StoreError("Invalid media reference")
+
+            review = db.execute("""
+                SELECT file_sha256,file_size,quality_status
+                FROM clip_review
+                WHERE clip_id=?
+            """, (cid,)).fetchone()
+
+            if review != (sha,size,"passed"):
+                raise StoreError("Media catalog conflict")
+
+            db.execute("""
+                INSERT INTO clip_media
+                (clip_id,provider,remote_path,
+                 sha256,file_size,verified_at)
+                VALUES (?,?,?,?,?,?)
+            """, row)
+
+    print(
+        "TURSO: MEDIA REFERENCES RESTORED",
+        len(rows), flush=True
+    )
+
+    return len(rows)
+
+
+def verify_media(db, clip_id):
+    """Verify archived content without enabling publication."""
+    import tempfile
+    import shutil
+    from pathlib import Path
+    import video_storage as storage
+
+    row = db.execute("""
+        SELECT m.provider,m.remote_path,
+               m.sha256,m.file_size,
+               r.file_sha256,r.file_size,r.quality_status
+        FROM clip_media m
+        JOIN clip_review r ON r.clip_id=m.clip_id
+        WHERE m.clip_id=?
+    """, (clip_id,)).fetchone()
+
+    if not row:
+        raise StoreError("Unknown archived clip")
+
+    provider, remote, sha, size, review_sha, review_size, quality = row
+
+    if (
+        provider != "mega"
+        or not isinstance(sha, str)
+        or not re.fullmatch(r"[a-f0-9]{64}", sha)
+        or remote != REMOTE + "/" + sha + ".mp4"
+        or type(size) is not int
+        or not 0 < size <= MAX_FILE
+        or sha != review_sha
+        or size != review_size
+        or quality != "passed"
+    ):
+        raise StoreError("Invalid media reference")
+
+    if shutil.disk_usage(tempfile.gettempdir()).free < (
+        size + 64 * 1024**2
+    ):
+        raise storage.StorageError("Insufficient local storage")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "verified.mp4"
+
+        storage.run(
+            "copyto", remote, str(target),
+            "--max-size", "100M"
+        )
+
+        if (
+            not target.is_file()
+            or target.stat().st_size != size
+            or storage.digest(target) != sha
+        ):
+            raise storage.StorageError("Archived video integrity failed")
+
+    print("MEDIA: ARCHIVED VIDEO VERIFIED", clip_id, flush=True)
+
+    return {
+        "clip_id": clip_id,
+        "status": "verified",
+        "size": size
+    }
+
+
+def verify_on_start(db_path, clip_id):
+    import sqlite3
+    from pathlib import Path
+    from contextlib import closing
+
+    try:
+        uri = Path(db_path).resolve().as_uri() + "?mode=ro"
+
+        with closing(sqlite3.connect(uri, uri=True)) as db:
+            result = verify_media(db, clip_id)
+
+        print(
+            "V59: RECOVERED VIDEO BYTES",
+            result["size"], flush=True
+        )
+
+        print(
+            "V59: CLOUD RECOVERY TEST PASSED",
+            flush=True
+        )
+
+    except Exception as exc:
+        print(
+            "V59: CLOUD RECOVERY FAILED",
+            type(exc).__name__, flush=True
+        )
