@@ -11,6 +11,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from twitch_auth import get_token
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS streamers (
@@ -97,8 +98,17 @@ def check(db: sqlite3.Connection, demo_file: str | None = None) -> list[dict]:
     if demo_file:
         streams = json.loads(Path(demo_file).read_text(encoding='utf-8'))
     else:
-        streams = fetch_twitch_live(channels, os.getenv('TWITCH_CLIENT_ID',''),
-                                    os.getenv('TWITCH_ACCESS_TOKEN',''))
+        client_id = os.getenv("TWITCH_CLIENT_ID", "")
+        if os.getenv("TWITCH_CLIENT_SECRET"):
+            token = get_token()
+            try:
+                streams = fetch_twitch_live(channels, client_id, token)
+            except urllib.error.HTTPError as exc:
+                if exc.code != 401:
+                    raise
+                streams = fetch_twitch_live(channels, client_id, get_token(force=True))
+        else:
+            streams = fetch_twitch_live(channels, client_id, os.getenv("TWITCH_ACCESS_TOKEN", ""))
     # Ignore streams from channels not in the configured watchlist.
     allowed = set(channels)
     current = [s for s in streams if str(s.get("user_login","")).lower() in allowed]
