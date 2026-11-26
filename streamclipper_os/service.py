@@ -64,6 +64,7 @@ def main():
     p.add_argument('--timeout',type=int,default=7200)
     p.add_argument('--interval',type=int,default=120,help='Twitch poll seconds, >=60')
     p.add_argument('--tick',type=int,default=10,help='Supervisor tick seconds, >=1')
+    p.add_argument('--persistent-history', action='store_true')
     p.add_argument('--once',action='store_true',help='Run one cycle and exit')
     args=p.parse_args()
     if args.youtube_upload: p.error('Use youtube_daemon.py for independent uploads')
@@ -71,6 +72,11 @@ def main():
     if args.tick<1:p.error('--tick must be >=1')
     logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(message)s')
     with closing(connect(args.db)) as db:
+        if args.persistent_history:
+            import turso_history as history
+            history.restore_streams(db)
+            history.prepare_tracking(db)
+
         supervisor=Supervisor(db,args.out,args.workers,args.timeout,args.execute)
         active=db.execute("SELECT COUNT(*) FROM clip_jobs WHERE status='running'").fetchone()[0]
         if active:p.error(f'{active} running jobs from earlier process; inspect PIDs before --recover')
@@ -81,6 +87,19 @@ def main():
                 do_poll=current>=next_poll
                 # Discovery remains active independently of recording.
                 result=cycle(db,supervisor,demo_file=args.demo_file,poll=do_poll,upload=False)
+                if do_poll and args.persistent_history:
+                    try:
+                        saved = history.save_streams(db)
+                        result["history"] = {
+                            "status": "ok",
+                            "saved": saved
+                        }
+                    except (history.StoreError, sqlite3.Error) as exc:
+                        result["history"] = {
+                            "status": "retry_pending",
+                            "error": type(exc).__name__
+                        }
+
                 if do_poll:next_poll=current+args.interval
                 print(json.dumps(result,ensure_ascii=False),flush=True)
                 if args.once:break
