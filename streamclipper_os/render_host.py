@@ -3,6 +3,7 @@ import os, hmac, base64, json, shutil, subprocess, sys, threading, tempfile
 from pathlib import Path
 from http.server import ThreadingHTTPServer
 from dashboard import make_handler, snapshot, render
+from streamer_http import handle_streamers
 
 def handler(db, password):
     if len(password)<10: raise ValueError('Dashboard password must have at least 10 characters')
@@ -73,12 +74,13 @@ def handler(db, password):
                     except OSError: memory[key]=None
                 return self.respond(200,json.dumps({'memory':memory,'disk_free':shutil.disk_usage('/tmp').free,'storage':'ephemeral','recording':False}).encode(),'application/json')
             if self.path!='/': return self.respond(404,b'Not found')
-            page=render(snapshot(db)).replace(b'Lokales Dashboard \xc2\xb7 keine Cloud-Verbindung',b'Render Pilot - nur lesend, fluechtiger Speicher').replace(b'<form method="post"',b'<form hidden method="post"')
+            page=render(snapshot(db)).replace(b'Lokales Dashboard \xc2\xb7 keine Cloud-Verbindung',b'Render Cloud - fluechtiger Speicher').replace(b'<form method="post" action="/control"',b'<form hidden method="post" action="/control"')
             page=page.replace(b'</body>',b'<p><a href="/pilot">Pilot-Ergebnis</a> | <a href="/clip.mp4">Clip herunterladen</a> | <a href="/resources">Ressourcen</a></p><form method="post" action="/pilot"><button>75-Sekunden-Test starten</button></form></body>')
             return self.respond(200,page)
         def do_POST(self):
-            if self.path not in ('/pilot','/video-test'): return self.respond(405,b'Read-only pilot')
+            if self.path not in ('/pilot','/video-test','/streamers'): return self.respond(405,b'Read-only pilot')
             if not hmac.compare_digest(self.headers.get('Authorization','').encode(),expected.encode()): return self.respond(401,b'Unauthorized')
+            if self.path=='/streamers': return handle_streamers(self, db)
             if self.path=='/video-test':
                 if self.headers.get('X-Pilot-Confirm')!='video-only': return self.respond(403,b'Confirmation required')
                 if self.headers.get('Content-Type')!='video/mp4' or self.headers.get('Transfer-Encoding'): return self.respond(415,b'MP4 required')

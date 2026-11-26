@@ -6,6 +6,8 @@ from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 from stream_monitor import connect
+from streamer_manager import overview as streamer_overview
+from streamer_ui import render_streamers
 from control import status, set_enabled
 from youtube_metrics import latest
 from performance import analyze
@@ -27,11 +29,7 @@ def snapshot(db_path: str) -> dict:
         result['tiktok_performance'] = analyze(db,destination='tiktok')
         result['tiktok_metrics'] = latest_tiktok(db)
         result['tiktok_status'] = overview(db)
-        result['streamers'] = [
-            {'channel': channel, 'enabled': bool(active)}
-            for channel, active in db.execute(
-                'SELECT channel,enabled FROM streamers ORDER BY channel LIMIT 100')
-        ]
+        result['streamers'] = streamer_overview(db)
         result['recent_jobs'] = [
             {'id': jid, 'channel': channel, 'status': state}
             for jid, channel, state in db.execute(
@@ -52,7 +50,7 @@ def render(data: dict, message: str = '') -> bytes:
     tm=data.get('tiktok_metrics',{})
     metrics.extend((label, tm.get(key) if tm.get(key) is not None else '—') for label,key in [('TikTok-Aufrufe','views'),('TikTok-Likes','likes'),('TikTok-Kommentare','comments'),('TikTok-Shares','shares')])
     cards = ''.join(f'<article><small>{e(label)}</small><strong>{e(value)}</strong></article>' for label,value in metrics)
-    streamers = ''.join(f'<li>{e(item["channel"])} – {"aktiv" if item["enabled"] else "inaktiv"}</li>' for item in data['streamers']) or '<li>Keine Streamer eingetragen</li>'
+    streamers = render_streamers(data["streamers"])
     jobs = ''.join(f'<li>#{e(item["id"])} {e(item["channel"])} – {e(item["status"])}</li>' for item in data['recent_jobs']) or '<li>Keine Aufträge</li>'
     learning_rows = ''.join(f'<li>{e(platform)} / {e(dimension)}: {e(info["preferred"] or "Weitere Daten sammeln")}</li>' for platform, dimensions in data.get('learning',{}).items() for dimension, info in dimensions.items())
     rankings = ''.join(f'<li>{e(x["channel"])} – {e(x["median_views_per_day"])} Aufrufe/Tag (Median), {e(x["samples"])} Clips – {"Priorität prüfen" if x["recommendation"]=="review_priority" else "Weitere Daten sammeln"}</li>' for x in data.get('performance',{}).get('channels',[])[:20]) or '<li>Noch keine vergleichbaren öffentlichen Clips</li>'
@@ -75,7 +73,7 @@ ul{{padding-left:22px;line-height:1.9}}.sections{{display:grid;grid-template-col
 <div><strong class="{'on' if flag else 'off'}">{'Freigegeben' if flag else 'Gestoppt'}</strong>
 <form method="post" action="/control"><input type="hidden" name="action" value="{action}"><button type="submit">{label}</button></form></div></header>
 <p class="note">{e(message)}</p><div class="grid">{cards}</div><div class="sections">
-<section><h2>Streamer</h2><ul>{streamers}</ul></section><section><h2>Letzte Aufträge</h2><ul>{jobs}</ul></section></div>
+<section><h2>Streamer</h2>{streamers}</section><section><h2>Letzte Aufträge</h2><ul>{jobs}</ul></section></div>
 <section><h2>TikTok-Status</h2><p>Posteingang ist keine öffentliche Veröffentlichung.</p><ul>{tt}</ul></section>
 <section><h2>Erfolgsanalyse</h2><p>Öffentliche Clips, Messalter 1–7 Tage; mindestens 5 Clips für Prioritätsprüfung.</p><ul>{rankings}</ul><h3>Lernstrategie (UTC, Empfehlungen)</h3><ul>{learning_rows}</ul></section>
 <p class="note">Die Freigabe startet keinen Server oder Supervisor. Der Supervisor muss separat mit --execute laufen.
