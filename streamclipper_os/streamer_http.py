@@ -4,7 +4,7 @@ import sqlite3
 from contextlib import closing
 from urllib.parse import parse_qs
 from stream_monitor import connect
-from streamer_manager import manage
+from turso_store import manage_persistent, StoreError
 
 def handle_streamers(handler, db_path):
     hostname = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
@@ -41,7 +41,7 @@ def handle_streamers(handler, db_path):
                 raise ValueError("Invalid fields")
 
         with closing(connect(db_path)) as db:
-            manage(
+            manage_persistent(
                 db,
                 fields["platform"][0],
                 fields["channel"][0],
@@ -50,7 +50,7 @@ def handle_streamers(handler, db_path):
 
     except (ValueError, UnicodeError):
         return handler.respond(400, b"Invalid streamer request")
-    except sqlite3.Error:
+    except (sqlite3.Error, StoreError):
         return handler.respond(503, b"Database unavailable")
     except OSError:
         return handler.respond(400, b"Request failed")
