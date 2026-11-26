@@ -6,8 +6,8 @@ import urllib.parse
 import uuid
 
 def probe():
-    url = os.getenv("TURSO_DATABASE_URL", "")
-    token = os.getenv("TURSO_AUTH_TOKEN", "")
+    url = os.getenv("TURSO_DATABASE_URL", "").strip()
+    token = os.getenv("TURSO_AUTH_TOKEN", "").strip()
 
     print("TURSO: URL LENGTH", len(url), flush=True)
     print("TURSO: TOKEN PRESENT", bool(token), flush=True)
@@ -38,14 +38,14 @@ def probe():
         ]
 
         requests = [
-            {"type": "execute", "stmt": {"sql": sql}}
+            {"type": "execute", "stmt": {"sql": sql, "args": [], "named_args": [], "want_rows": True}}
             for sql in statements
         ]
         requests.append({"type": "close"})
 
         req = urllib.request.Request(
             url.rstrip("/") + "/v2/pipeline",
-            data=json.dumps({"requests": requests}).encode(),
+            data=json.dumps({"baton": None, "requests": requests}).encode(),
             headers={
                 "Authorization": "Bearer " + token,
                 "Content-Type": "application/json"
@@ -77,6 +77,11 @@ def probe():
 
     except urllib.error.HTTPError as exc:
         print("TURSO: HTTP STATUS", exc.code, flush=True)
+        detail = exc.read(4096).decode("utf-8", errors="replace")
+        for secret in (token, url):
+            if secret:
+                detail = detail.replace(secret, "[REDACTED]")
+        print("TURSO: HTTP DETAIL", detail[:300], flush=True)
         return False
 
     except Exception as exc:
