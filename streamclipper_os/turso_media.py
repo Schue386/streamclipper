@@ -194,7 +194,7 @@ def verify_media(db, clip_id):
 
         storage.run(
             "copyto", remote, str(target),
-            "--max-size", "100M"
+            "--max-transfer", "100M", "--cutoff-mode", "HARD"
         )
 
         if (

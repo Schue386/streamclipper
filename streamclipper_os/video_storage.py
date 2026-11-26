@@ -31,6 +31,14 @@ def run(*args):
             check=True
         )
         return result.stdout
+    except subprocess.CalledProcessError as exc:
+        print(
+            "STORAGE: COMMAND FAILED",
+            args[0],
+            "EXIT", exc.returncode,
+            flush=True
+        )
+        raise StorageError("Transfer command failed") from None
     except (OSError, subprocess.SubprocessError) as exc:
         raise StorageError(type(exc).__name__) from None
 
