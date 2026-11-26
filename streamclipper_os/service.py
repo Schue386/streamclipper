@@ -53,6 +53,26 @@ def cycle(db, supervisor, *, demo_file=None, poll=True, upload=False, sender=Non
         result['youtube']={'status':'disabled'}
     return result
 
+def run_archive_cycle(db_path):
+    try:
+        from clip_archive import archive_next
+
+        with closing(connect(db_path)) as db:
+            result = archive_next(db)
+
+        print(
+            "ARCHIVE:", json.dumps(result),
+            flush=True
+        )
+
+    except Exception as exc:
+        print(
+            "ARCHIVE: CYCLE FAILED",
+            type(exc).__name__,
+            flush=True
+        )
+
+
 def sync_persistent_data(db):
     import turso_jobs as jobs
     import turso_catalog as catalog
@@ -158,6 +178,7 @@ def main():
         active=db.execute("SELECT COUNT(*) FROM clip_jobs WHERE status='running'").fetchone()[0]
         if active and not args.persistent_history:p.error(f'{active} running jobs from earlier process; inspect PIDs before --recover')
         next_poll=0.0
+        archive_thread = None
         try:
             while True:
                 current=time.monotonic()
@@ -200,6 +221,25 @@ def main():
                     and not supervisor.execute
                 ):
                     result.update(sync_persistent_data(db))
+
+                if (
+                    do_poll
+                    and args.persistent_history
+                    and os.getenv("STREAMCLIPPER_DATA_SYNC") == "1"
+                    and os.getenv("STREAMCLIPPER_AUTO_ARCHIVE") == "1"
+                    and os.getenv("STREAMCLIPPER_V58_TEST") != "1"
+                    and not os.getenv("STREAMCLIPPER_VERIFY_CLIP_ID")
+                    and not supervisor.execute
+                    and result.get("jobs", {}).get("status") == "ok"
+                    and result.get("catalog", {}).get("status") == "ok"
+                ):
+                    if archive_thread is None or not archive_thread.is_alive():
+                        archive_thread = Thread(
+                            target=run_archive_cycle,
+                            args=(args.db,),
+                            daemon=True
+                        )
+                        archive_thread.start()
 
                 if do_poll:next_poll=current+args.interval
                 print(json.dumps(result,ensure_ascii=False),flush=True)
