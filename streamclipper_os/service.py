@@ -73,6 +73,79 @@ def run_archive_cycle(db_path):
         )
 
 
+def production_configured():
+    import os
+    import re
+
+    channels = {
+        c.strip().lower()
+        for c in os.getenv(
+            "STREAMCLIPPER_AUTHORIZED_TWITCH", ""
+        ).split(",") if c.strip()
+    }
+
+    archive = {
+        c.strip().lower()
+        for c in os.getenv(
+            "STREAMCLIPPER_ARCHIVE_TWITCH", ""
+        ).split(",") if c.strip()
+    }
+
+    return (
+        os.getenv("STREAMCLIPPER_PRODUCTION") == "1"
+        and os.getenv("STREAMCLIPPER_DATA_SYNC") == "1"
+        and os.getenv("STREAMCLIPPER_AUTO_ARCHIVE") == "1"
+        and os.getenv("STREAMCLIPPER_V58_TEST") != "1"
+        and not os.getenv("STREAMCLIPPER_VERIFY_CLIP_ID")
+        and not os.getenv("STREAMCLIPPER_WEBHOOK")
+        and len(channels) == 1
+        and channels == archive
+        and all(
+            re.fullmatch(r"[a-z0-9_]{1,25}", c)
+            for c in channels
+        )
+    )
+
+
+def queue_production(db, supervisor, result):
+    import os
+    from clip_jobs import enqueue_production
+
+    if not supervisor.persistent_jobs:
+        return 0
+
+    if not supervisor.execute or not control_enabled(db):
+        return 0
+
+    if os.getenv("STREAMCLIPPER_DATA_SYNC") != "1":
+        return 0
+
+    if os.getenv("STREAMCLIPPER_V58_TEST") == "1":
+        return 0
+
+    if result.get("poll") != "ok":
+        return 0
+
+    if result.get("history", {}).get("status") != "ok":
+        return 0
+
+    for table in (
+        "history_pending",
+        "jobs_pending",
+        "catalog_pending"
+    ):
+        if db.execute(
+            f"SELECT COUNT(*) FROM {table}"
+        ).fetchone()[0]:
+            return 0
+
+    channels = os.getenv(
+        "STREAMCLIPPER_AUTHORIZED_TWITCH", ""
+    ).split(",")
+
+    return enqueue_production(db, channels)
+
+
 def sync_persistent_data(db):
     import turso_jobs as jobs
     import turso_catalog as catalog
@@ -128,7 +201,14 @@ def main():
     p.add_argument('--once',action='store_true',help='Run one cycle and exit')
     args=p.parse_args()
     if args.persistent_history and args.execute:
-        p.error("Persistent recording not yet enabled")
+        if (
+            not production_configured()
+            or args.workers != 1
+            or args.timeout != 900
+            or args.demo_file
+            or args.once
+        ):
+            p.error("Invalid production configuration")
     if args.youtube_upload: p.error('Use youtube_daemon.py for independent uploads')
     if args.interval<60:p.error('--interval must be >=60')
     if args.tick<1:p.error('--tick must be >=1')
@@ -177,6 +257,18 @@ def main():
         supervisor.persistent_jobs = args.persistent_history
         active=db.execute("SELECT COUNT(*) FROM clip_jobs WHERE status='running'").fetchone()[0]
         if active and not args.persistent_history:p.error(f'{active} running jobs from earlier process; inspect PIDs before --recover')
+        if args.persistent_history:
+            from control import set_enabled
+
+            set_enabled(db, False)
+
+            if args.execute:
+                if active:
+                    p.error("Unresolved recording jobs")
+
+                set_enabled(db, True)
+                print("PRODUCTION: ENABLED", flush=True)
+
         next_poll=0.0
         archive_thread = None
         try:
@@ -184,6 +276,11 @@ def main():
                 current=time.monotonic()
                 do_poll=current>=next_poll
                 # Discovery remains active independently of recording.
+                supervisor.archive_busy = (
+                    archive_thread is not None
+                    and archive_thread.is_alive()
+                )
+
                 result=cycle(db,supervisor,demo_file=args.demo_file,poll=do_poll,upload=False)
                 if do_poll and args.persistent_history:
                     try:
@@ -218,8 +315,15 @@ def main():
                     args.persistent_history
                     and os.getenv("STREAMCLIPPER_DATA_SYNC") == "1"
                     and os.getenv("STREAMCLIPPER_V58_TEST") != "1"
-                    and not supervisor.execute
                 ):
+                    if do_poll and not args.demo_file:
+                        try:
+                            result["queued"] = queue_production(
+                                db, supervisor, result
+                            )
+                        except (ValueError, sqlite3.Error) as exc:
+                            result["queue_error"] = type(exc).__name__
+
                     result.update(sync_persistent_data(db))
 
                 if (
@@ -229,7 +333,7 @@ def main():
                     and os.getenv("STREAMCLIPPER_AUTO_ARCHIVE") == "1"
                     and os.getenv("STREAMCLIPPER_V58_TEST") != "1"
                     and not os.getenv("STREAMCLIPPER_VERIFY_CLIP_ID")
-                    and not supervisor.execute
+                    and not supervisor.active
                     and result.get("jobs", {}).get("status") == "ok"
                     and result.get("catalog", {}).get("status") == "ok"
                 ):

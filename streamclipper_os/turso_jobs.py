@@ -362,3 +362,52 @@ def restore_jobs(db):
     )
 
     return counts
+
+
+def reserve_production_job(job_id, stream_id, channel, owner):
+    """Atomically reserve one persisted production job."""
+    from stream_monitor import now
+
+    result = execute([
+        ("""
+            INSERT INTO job_reservations
+                (platform,stream_id,owner,reserved_at)
+
+            SELECT j.platform,j.stream_id,?,?
+            FROM clip_jobs j
+            WHERE j.id=?
+              AND j.platform='twitch'
+              AND j.stream_id=?
+              AND j.channel=?
+              AND j.status='queued'
+
+              AND NOT EXISTS (
+                  SELECT 1 FROM clip_jobs
+                  WHERE status='running'
+              )
+
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM job_reservations r
+                  LEFT JOIN clip_jobs x
+                    ON x.platform=r.platform
+                   AND x.stream_id=r.stream_id
+                  WHERE x.id IS NULL
+                     OR x.status NOT IN ('completed','failed')
+              )
+
+            ON CONFLICT(platform,stream_id)
+            DO NOTHING
+            RETURNING owner
+        """, (owner,now(),job_id,stream_id,channel))
+    ])[0]
+
+    rows = result["rows"]
+
+    if not rows:
+        return False
+
+    if len(rows) != 1 or decode_value(rows[0][0]) != owner:
+        raise StoreError("Invalid production reservation")
+
+    return True

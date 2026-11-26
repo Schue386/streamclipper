@@ -5,7 +5,24 @@ from http.server import ThreadingHTTPServer
 from dashboard import make_handler, snapshot, render
 from streamer_http import handle_streamers
 
-def handler(db, password):
+def monitoring_command(production=False):
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve().parent / "service.py"),
+        "--db", "/tmp/streamclipper.sqlite3",
+        "--out", "/tmp/live_clips",
+        "--workers", "1",
+        "--interval", "120",
+        "--persistent-history"
+    ]
+
+    if production:
+        command.extend(["--execute", "--timeout", "900"])
+
+    return command
+
+
+def handler(db, password, production=False):
     if len(password)<10: raise ValueError('Dashboard password must have at least 10 characters')
     expected='Basic '+base64.b64encode(('admin:'+password).encode()).decode()
     lock=threading.Lock()
@@ -72,7 +89,7 @@ def handler(db, password):
                     try:
                         with open('/sys/fs/cgroup/'+key) as f: memory[key]=f.read().strip()
                     except OSError: memory[key]=None
-                return self.respond(200,json.dumps({'memory':memory,'disk_free':shutil.disk_usage('/tmp').free,'storage':'ephemeral','recording':False}).encode(),'application/json')
+                return self.respond(200,json.dumps({'memory':memory,'disk_free':shutil.disk_usage('/tmp').free,'storage':'ephemeral','recording':None if production else False,'production_enabled':production}).encode(),'application/json')
             if self.path!='/': return self.respond(404,b'Not found')
             page=render(snapshot(db)).replace(b'Lokales Dashboard \xc2\xb7 keine Cloud-Verbindung',b'Render Cloud - fluechtiger Speicher').replace(b'<form method="post" action="/control"',b'<form hidden method="post" action="/control"')
             page=page.replace(b'</body>',b'<p><a href="/pilot">Pilot-Ergebnis</a> | <a href="/clip.mp4">Clip herunterladen</a> | <a href="/resources">Ressourcen</a></p><form method="post" action="/pilot"><button>75-Sekunden-Test starten</button></form></body>')
@@ -81,6 +98,14 @@ def handler(db, password):
             if self.path not in ('/pilot','/video-test','/streamers'): return self.respond(405,b'Read-only pilot')
             if not hmac.compare_digest(self.headers.get('Authorization','').encode(),expected.encode()): return self.respond(401,b'Unauthorized')
             if self.path=='/streamers': return handle_streamers(self, db)
+
+            if production and self.path in (
+                "/pilot", "/video-test"
+            ):
+                return self.respond(
+                    409,b"Production mode active"
+                )
+
             if self.path=='/video-test':
                 if self.headers.get('X-Pilot-Confirm')!='video-only': return self.respond(403,b'Confirmation required')
                 if self.headers.get('Content-Type')!='video/mp4' or self.headers.get('Transfer-Encoding'): return self.respond(415,b'MP4 required')
@@ -123,10 +148,21 @@ if __name__=='__main__':
         initialize_streamers(db)
 
     print("TURSO: PERSISTENT STORAGE READY", flush=True)
+    from service import production_configured
+
+    production = production_configured()
+
+    print(
+        "PRODUCTION MODE:",
+        "ENABLED" if production else "DISABLED",
+        flush=True
+    )
+
     from storage_probe import probe
 
     if (
-        os.getenv("STREAMCLIPPER_V58_TEST") != "1"
+        not production
+        and os.getenv("STREAMCLIPPER_V58_TEST") != "1"
         and not os.getenv("STREAMCLIPPER_VERIFY_CLIP_ID")
     ):
         threading.Thread(
@@ -134,6 +170,6 @@ if __name__=='__main__':
             daemon=True
         ).start()
 
-    monitoring = subprocess.Popen([sys.executable, str(Path(__file__).resolve().parent / "service.py"), "--db", "/tmp/streamclipper.sqlite3", "--out", "/tmp/live_clips", "--workers", "1", "--interval", "120", "--persistent-history"])
-    with ThreadingHTTPServer(('0.0.0.0',int(os.environ.get('PORT','10000'))),handler('/tmp/streamclipper.sqlite3',os.environ['DASHBOARD_PASSWORD'])) as server:
+    monitoring = subprocess.Popen(monitoring_command(production))
+    with ThreadingHTTPServer(('0.0.0.0',int(os.environ.get('PORT','10000'))),handler('/tmp/streamclipper.sqlite3',os.environ['DASHBOARD_PASSWORD'],production)) as server:
         server.serve_forever()

@@ -46,6 +46,66 @@ def reconcile_after_restart(db):
             db.execute("UPDATE worker_runs SET ended_at=COALESCE(ended_at,?) WHERE job_id=?",(now(),job_id))
     return len(rows)
 
+def production_allowed(db, plan, status="queued"):
+    import re
+    from streamer_status import resolve
+
+    if os.getenv("STREAMCLIPPER_DATA_SYNC") != "1":
+        return False
+
+    if not control_enabled(db):
+        return False
+
+    allowed = {
+        c.strip().lower()
+        for c in os.getenv(
+            "STREAMCLIPPER_AUTHORIZED_TWITCH", ""
+        ).split(",")
+    }
+
+    channel = plan["channel"]
+    sid = plan["stream_id"]
+
+    if channel not in allowed:
+        return False
+
+    if not re.fullmatch(r"[a-z0-9_]{1,25}", channel):
+        return False
+
+    if not re.fullmatch(r"[0-9]{1,40}", sid):
+        return False
+
+    row = db.execute("""
+        SELECT s.last_seen_at,p.status,p.checked_at
+        FROM clip_jobs j
+        JOIN streams s
+          ON s.platform=j.platform
+         AND s.stream_id=j.stream_id
+         AND s.channel=j.channel
+        JOIN streamers w
+          ON w.platform=j.platform
+         AND w.channel=j.channel
+        JOIN streamer_status p
+          ON p.platform=j.platform
+         AND p.channel=j.channel
+        WHERE j.id=?
+          AND j.platform='twitch'
+          AND j.stream_id=?
+          AND j.channel=?
+          AND j.status=?
+          AND s.status='live'
+          AND w.enabled=1
+    """, (plan["job_id"],sid,channel,status)).fetchone()
+
+    if not row:
+        return False
+
+    return (
+        resolve("live",row[0],180) == "live"
+        and resolve(row[1],row[2],180) == "live"
+    )
+
+
 class Supervisor:
     def __init__(self,db,output_root='live_clips',max_workers=2,timeout=7200,
                  execute=False,popen_factory=None):
@@ -57,6 +117,7 @@ class Supervisor:
         self.active={}
         self.reservation_owner = uuid.uuid4().hex
         self.persistent_jobs = False
+        self.archive_busy = False
         initialize(db)
 
     def tick(self):
@@ -91,20 +152,36 @@ class Supervisor:
                 storage_blocked=shutil.disk_usage(self.output_root).free < int(os.environ["STREAMCLIPPER_MIN_FREE_GIB"])*1024**3
             except (OSError,ValueError):
                 storage_blocked=True
-        if self.execute and control_enabled(self.db) and not storage_blocked:
+        if (
+            self.execute
+            and control_enabled(self.db)
+            and not storage_blocked
+            and not self.archive_busy
+        ):
             while len(self.active)<self.max_workers:
                 plan=plan_next(self.db,self.output_root)
                 if plan is None:break
+                if self.persistent_jobs:
+                    if not production_allowed(self.db, plan):
+                        print("SUPERVISOR: SOURCE BLOCKED", flush=True)
+                        break
+
+                    if self.db.execute(
+                        "SELECT COUNT(*) FROM jobs_pending"
+                    ).fetchone()[0]:
+                        break
+
                 job_id=plan['job_id'];out=Path(plan['output_dir']);out.mkdir(parents=True,exist_ok=True)
                 logpath=out/'supervisor.log'
                 if self.persistent_jobs:
-                    from turso_jobs import reserve_job
+                    from turso_jobs import reserve_production_job
                     from turso_store import StoreError
 
                     try:
-                        if not reserve_job(
-                            "twitch",
+                        if not reserve_production_job(
+                            job_id,
                             plan["stream_id"],
+                            plan["channel"],
                             self.reservation_owner
                         ):
                             raise StoreError(
@@ -123,7 +200,11 @@ class Supervisor:
                 with self.db:
                     claim=self.db.execute("UPDATE clip_jobs SET status='running',attempts=attempts+1,started_at=?,output_dir=? WHERE id=? AND status='queued'",
                                           (now(),str(out),job_id))
-                if claim.rowcount!=1:continue
+                if claim.rowcount != 1:
+                    if self.persistent_jobs:
+                        self.execute = False
+                        break
+                    continue
                 if self.persistent_jobs:
                     from turso_jobs import save_pending
                     from turso_store import StoreError
@@ -138,6 +219,14 @@ class Supervisor:
                         if pending:
                             raise StoreError("Unsaved job state")
 
+                        if not production_allowed(
+                            self.db, plan, "running"
+                        ):
+                            raise StoreError(
+                                "Source authorization changed"
+                            )
+
+
                     except (StoreError, sqlite3.Error) as exc:
                         self.execute = False
                         print(
@@ -149,7 +238,25 @@ class Supervisor:
 
                 try:
                     with logpath.open('ab') as log:
-                        proc=self.spawn(plan['command'],stdout=log,stderr=subprocess.STDOUT)
+                        command = list(plan["command"])
+
+                        if self.persistent_jobs:
+                            command.extend([
+                                "--stop-after", "5",
+                                "--buffer-min", "5",
+                                "--max-clips-per-hour", "2",
+                                "--ratio", "9:16",
+                                "--asr", "full",
+                                "--device", "cpu",
+                                "--whisper-model",
+                                "/opt/whisper-tiny"
+                            ])
+
+                        proc=self.spawn(
+                            command,
+                            stdout=log,
+                            stderr=subprocess.STDOUT
+                        )
                 except OSError as exc:
                     with self.db:self.db.execute('UPDATE clip_jobs SET status=?,error_message=?,finished_at=? WHERE id=?',
                                                  ('failed',str(exc)[:1500],now(),job_id))

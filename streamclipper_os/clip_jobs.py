@@ -112,3 +112,110 @@ def main():
             print(json.dumps(run_next(db, args.out, args.execute, args.timeout), indent=2))
 if __name__ == "__main__":
     main()
+
+
+def production_candidates(db, authorized_channels):
+    """Select fresh, authorized streams without creating jobs."""
+    import re
+    from streamer_status import resolve
+
+    allowed = {
+        channel.strip().lower()
+        for channel in authorized_channels
+        if channel.strip()
+    }
+
+    if any(
+        not re.fullmatch(r"[a-z0-9_]{1,25}", c)
+        for c in allowed
+    ):
+        raise ValueError("Invalid authorized channel")
+
+    if not allowed:
+        return []
+
+    rows = db.execute("""
+        SELECT s.platform,s.stream_id,s.channel,
+               s.last_seen_at,p.status,p.checked_at
+        FROM streams s
+        JOIN streamers w
+          ON w.platform=s.platform
+         AND w.channel=s.channel
+        JOIN streamer_status p
+          ON p.platform=s.platform
+         AND p.channel=s.channel
+        WHERE s.platform='twitch'
+          AND s.status='live'
+          AND w.enabled=1
+          AND NOT EXISTS (
+              SELECT 1 FROM clip_jobs j
+              WHERE j.platform=s.platform
+                AND j.stream_id=s.stream_id
+          )
+        ORDER BY s.last_seen_at DESC,s.stream_id
+    """).fetchall()
+
+    candidates = []
+    seen = set()
+
+    for platform, sid, channel, last_seen, status, checked in rows:
+
+        if channel not in allowed or channel in seen:
+            continue
+
+        if not re.fullmatch(r"[0-9]{1,40}", sid):
+            continue
+
+        if resolve(status, checked, 180) != "live":
+            continue
+
+        if resolve("live", last_seen, 180) != "live":
+            continue
+
+        seen.add(channel)
+
+        candidates.append({
+            "platform": platform,
+            "stream_id": sid,
+            "channel": channel
+        })
+
+    return candidates
+
+
+def enqueue_production(db, authorized_channels):
+    """Queue one authorized production job."""
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+
+        active = db.execute("""
+            SELECT COUNT(*) FROM clip_jobs
+            WHERE status IN ('queued','running')
+        """).fetchone()[0]
+
+        if active:
+            return 0
+
+        candidates = production_candidates(
+            db, authorized_channels
+        )
+
+        if not candidates:
+            return 0
+
+        item = candidates[0]
+
+        cursor = db.execute("""
+            INSERT INTO clip_jobs
+            (platform,stream_id,channel,created_at)
+            VALUES (?,?,?,?)
+            ON CONFLICT(platform,stream_id)
+            DO NOTHING
+        """, (
+            item["platform"],
+            item["stream_id"],
+            item["channel"],
+            now()
+        ))
+
+        return cursor.rowcount

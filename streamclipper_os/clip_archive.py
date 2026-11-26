@@ -9,6 +9,50 @@ import turso_media as media
 from turso_jobs import decode_value
 
 
+def archive_permission_filter():
+    import os
+
+    def channels(key):
+        return {
+            c.strip().lower()
+            for c in os.getenv(key, "").split(",")
+            if c.strip()
+        }
+
+    allowed = sorted(
+        channels("STREAMCLIPPER_AUTHORIZED_TWITCH")
+        & channels("STREAMCLIPPER_ARCHIVE_TWITCH")
+    )
+
+    if not allowed or any(
+        not re.fullmatch(r"[a-z0-9_]{1,25}", c)
+        for c in allowed
+    ):
+        return "r.rights_approved=1", ()
+
+    placeholders = ",".join("?" for _ in allowed)
+
+    sql = f"""
+        (
+            r.rights_approved=1
+            OR EXISTS (
+                SELECT 1 FROM clip_jobs j
+                JOIN streams s
+                  ON s.platform=j.platform
+                 AND s.stream_id=j.stream_id
+                 AND s.channel=j.channel
+                WHERE j.platform=c.platform
+                  AND j.stream_id=c.stream_id
+                  AND j.platform='twitch'
+                  AND j.status='completed'
+                  AND j.channel IN ({placeholders})
+            )
+        )
+    """
+
+    return sql, tuple(allowed)
+
+
 def archive_clip(db, clip_id):
 
     if not isinstance(clip_id, str) or not re.fullmatch(
@@ -16,16 +60,19 @@ def archive_clip(db, clip_id):
     ):
         raise storage.StorageError("Invalid clip ID")
 
-    row = db.execute("""
+    permission, params = archive_permission_filter()
+
+    row = db.execute(f"""
         SELECT c.file_path,
                r.file_sha256,
                r.file_size,
                r.quality_status,
-               r.rights_approved
+               CASE WHEN {permission}
+                    THEN 1 ELSE 0 END
         FROM clips c
         JOIN clip_review r ON r.clip_id=c.clip_id
         WHERE c.clip_id=?
-    """, (clip_id,)).fetchone()
+    """, (*params,clip_id)).fetchone()
 
     if not row:
         raise storage.StorageError("Unknown clip")
@@ -119,21 +166,23 @@ def archive_next(db):
         ).fetchone()[0]:
             return {"status": "waiting_for_sync"}
 
-    row = db.execute("""
+    permission, params = archive_permission_filter()
+
+    row = db.execute(f"""
         SELECT c.clip_id
         FROM clips c
         JOIN clip_review r ON r.clip_id=c.clip_id
         LEFT JOIN clip_media m ON m.clip_id=c.clip_id
         LEFT JOIN archive_retry a ON a.clip_id=c.clip_id
         WHERE r.quality_status='passed'
-          AND r.rights_approved=1
+          AND {permission}
           AND c.file_path IS NOT NULL
           AND c.file_path!=''
           AND m.clip_id IS NULL
           AND COALESCE(a.retry_after,0)<=?
         ORDER BY c.created_at,c.clip_id
         LIMIT 1
-    """, (time.time(),)).fetchone()
+    """, (*params,time.time())).fetchone()
 
     if not row:
         return {"status": "idle"}
