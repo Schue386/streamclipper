@@ -121,6 +121,8 @@ def queue_upload(db:sqlite3.Connection,clip_id:str,destination:str)->dict:
         # Recheck file integrity before approving the queue entry.
         file_ok=False
         try:
+            if not path:
+                raise FileNotFoundError("Clip file unavailable")
             with open(path,'rb') as handle:
                 digest=hashlib.file_digest(handle,'sha256').hexdigest()
             file_ok=digest==sha

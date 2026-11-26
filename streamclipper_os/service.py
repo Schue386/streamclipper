@@ -81,6 +81,9 @@ def main():
             import turso_jobs as jobs
             jobs.restore_jobs(db)
             jobs.prepare_tracking(db)
+            import turso_catalog as catalog
+            catalog.restore_catalog(db)
+            catalog.prepare_tracking(db)
 
         supervisor=Supervisor(db,args.out,args.workers,args.timeout,args.execute)
         supervisor.persistent_jobs = args.persistent_history
@@ -111,6 +114,14 @@ def main():
                         "status": "read_only",
                         "pending": db.execute(
                             "SELECT COUNT(*) FROM jobs_pending"
+                        ).fetchone()[0]
+                    }
+
+                if args.persistent_history:
+                    result["catalog"] = {
+                        "status": "read_only",
+                        "pending": db.execute(
+                            "SELECT COUNT(*) FROM catalog_pending"
                         ).fetchone()[0]
                     }
 
