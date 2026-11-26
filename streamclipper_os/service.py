@@ -27,7 +27,7 @@ def cycle(db, supervisor, *, demo_file=None, poll=True, upload=False, sender=Non
     if poll:
         try:
             events=check(db,demo_file)
-            result.update(poll='ok',new_streams=len(events),queued=enqueue_detected(db) if control_enabled(db) else 0)
+            result.update(poll='ok',new_streams=len(events),queued=enqueue_detected(db) if control_enabled(db) and not supervisor.persistent_jobs else 0)
         except (ValueError,KeyError,TypeError,sqlite3.Error,urllib.error.URLError,
                 TimeoutError,OSError,json.JSONDecodeError) as exc:
             result.update(poll='failed',poll_error=f'{type(exc).__name__}: {exc}'[:300])
@@ -67,6 +67,8 @@ def main():
     p.add_argument('--persistent-history', action='store_true')
     p.add_argument('--once',action='store_true',help='Run one cycle and exit')
     args=p.parse_args()
+    if args.persistent_history and args.execute:
+        p.error("Persistent recording not yet enabled")
     if args.youtube_upload: p.error('Use youtube_daemon.py for independent uploads')
     if args.interval<60:p.error('--interval must be >=60')
     if args.tick<1:p.error('--tick must be >=1')
@@ -76,10 +78,14 @@ def main():
             import turso_history as history
             history.restore_streams(db)
             history.prepare_tracking(db)
+            import turso_jobs as jobs
+            jobs.restore_jobs(db)
+            jobs.prepare_tracking(db)
 
         supervisor=Supervisor(db,args.out,args.workers,args.timeout,args.execute)
+        supervisor.persistent_jobs = args.persistent_history
         active=db.execute("SELECT COUNT(*) FROM clip_jobs WHERE status='running'").fetchone()[0]
-        if active:p.error(f'{active} running jobs from earlier process; inspect PIDs before --recover')
+        if active and not args.persistent_history:p.error(f'{active} running jobs from earlier process; inspect PIDs before --recover')
         next_poll=0.0
         try:
             while True:
@@ -99,6 +105,14 @@ def main():
                             "status": "retry_pending",
                             "error": type(exc).__name__
                         }
+
+                if args.persistent_history:
+                    result["jobs"] = {
+                        "status": "read_only",
+                        "pending": db.execute(
+                            "SELECT COUNT(*) FROM jobs_pending"
+                        ).fetchone()[0]
+                    }
 
                 if do_poll:next_poll=current+args.interval
                 print(json.dumps(result,ensure_ascii=False),flush=True)

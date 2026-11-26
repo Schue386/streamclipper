@@ -1,5 +1,6 @@
 """Persistent Turso data access."""
 import os
+import math
 import threading
 
 _write_lock = threading.RLock()
@@ -47,6 +48,13 @@ def execute(statements):
                 args.append({
                     "type": "integer",
                     "value": str(value)
+                })
+            elif isinstance(value, float):
+                if not math.isfinite(value):
+                    raise StoreError("Invalid float parameter")
+                args.append({
+                    "type": "float",
+                    "value": value
                 })
             elif isinstance(value, str):
                 args.append({

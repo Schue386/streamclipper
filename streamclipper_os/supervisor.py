@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 import signal
+import uuid
 import shutil
 import sqlite3
 import subprocess
@@ -54,6 +55,8 @@ class Supervisor:
         self.timeout=timeout;self.execute=execute
         self.spawn=popen_factory or subprocess.Popen
         self.active={}
+        self.reservation_owner = uuid.uuid4().hex
+        self.persistent_jobs = False
         initialize(db)
 
     def tick(self):
@@ -94,10 +97,56 @@ class Supervisor:
                 if plan is None:break
                 job_id=plan['job_id'];out=Path(plan['output_dir']);out.mkdir(parents=True,exist_ok=True)
                 logpath=out/'supervisor.log'
+                if self.persistent_jobs:
+                    from turso_jobs import reserve_job
+                    from turso_store import StoreError
+
+                    try:
+                        if not reserve_job(
+                            "twitch",
+                            plan["stream_id"],
+                            self.reservation_owner
+                        ):
+                            raise StoreError(
+                                "Stream already reserved"
+                            )
+
+                    except (StoreError, sqlite3.Error) as exc:
+                        self.execute = False
+                        print(
+                            "SUPERVISOR: RESERVATION BLOCKED",
+                            type(exc).__name__,
+                            flush=True
+                        )
+                        break
+
                 with self.db:
                     claim=self.db.execute("UPDATE clip_jobs SET status='running',attempts=attempts+1,started_at=?,output_dir=? WHERE id=? AND status='queued'",
                                           (now(),str(out),job_id))
                 if claim.rowcount!=1:continue
+                if self.persistent_jobs:
+                    from turso_jobs import save_pending
+                    from turso_store import StoreError
+
+                    try:
+                        save_pending(self.db)
+
+                        pending = self.db.execute(
+                            "SELECT COUNT(*) FROM jobs_pending"
+                        ).fetchone()[0]
+
+                        if pending:
+                            raise StoreError("Unsaved job state")
+
+                    except (StoreError, sqlite3.Error) as exc:
+                        self.execute = False
+                        print(
+                            "SUPERVISOR: RECORDING BLOCKED",
+                            type(exc).__name__,
+                            flush=True
+                        )
+                        break
+
                 try:
                     with logpath.open('ab') as log:
                         proc=self.spawn(plan['command'],stdout=log,stderr=subprocess.STDOUT)
