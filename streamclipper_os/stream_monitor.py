@@ -12,6 +12,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from twitch_auth import get_token
+from streamer_status import update as update_status
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS streamers (
@@ -68,12 +69,14 @@ def fetch_twitch_live(channels: list[str], client_id: str, access_token: str) ->
         raise ValueError('Set TWITCH_CLIENT_ID and TWITCH_ACCESS_TOKEN')
     result = []
     for i in range(0, len(channels), 100):
-        params = urllib.parse.urlencode([('user_login', c) for c in channels[i:i+100]])
+        params = urllib.parse.urlencode([('first', 100)] + [('user_login', c) for c in channels[i:i+100]])
         request = urllib.request.Request('https://api.twitch.tv/helix/streams?' + params,
                     headers={'Client-Id': client_id, 'Authorization': 'Bearer ' + access_token})
         with urllib.request.urlopen(request, timeout=20) as response:
             payload = json.load(response)
-        result.extend(payload.get('data', []))
+        if not isinstance(payload.get('data'), list) or payload.get('pagination', {}).get('cursor'):
+            raise ValueError('Incomplete Twitch response')
+        result.extend(payload['data'])
     return result
 
 def record_live(db: sqlite3.Connection, streams: list[dict]) -> list[dict]:
@@ -93,7 +96,7 @@ def record_live(db: sqlite3.Connection, streams: list[dict]) -> list[dict]:
                             'title':s.get('title',''),'started_at':s.get('started_at')})
     return new
 
-def check(db: sqlite3.Connection, demo_file: str | None = None) -> list[dict]:
+def _check(db: sqlite3.Connection, demo_file: str | None = None) -> list[dict]:
     channels = [r[0] for r in db.execute("SELECT channel FROM streamers WHERE platform='twitch' AND enabled=1")]
     if demo_file:
         streams = json.loads(Path(demo_file).read_text(encoding='utf-8'))
@@ -118,7 +121,18 @@ def check(db: sqlite3.Connection, demo_file: str | None = None) -> list[dict]:
         for sid, channel in db.execute("SELECT stream_id,channel FROM streams WHERE platform=? AND status=?", ("twitch","live")).fetchall():
             if channel in allowed and sid not in active:
                 db.execute("UPDATE streams SET status=? WHERE platform=? AND stream_id=?", ("offline","twitch",sid))
+    if not demo_file:
+        update_status(db, "twitch", channels, live={str(s["user_login"]).lower() for s in current})
     return events
+
+def check(db: sqlite3.Connection, demo_file: str | None = None) -> list[dict]:
+    try:
+        return _check(db, demo_file)
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        if not demo_file:
+            from streamer_status import report_error
+            report_error(db, "twitch", type(exc).__name__)
+        raise
 
 def main() -> None:
     p = argparse.ArgumentParser(description='StreamClipper OS Twitch monitor (no uploads/orders)')

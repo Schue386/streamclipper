@@ -68,7 +68,7 @@ article,section{{background:#1d2635;border:1px solid #334156;border-radius:14px;
 article small{{display:block;color:#a9b8ce}}article strong{{display:block;font-size:30px;margin-top:6px}}
 button{{padding:12px 16px;border:0;border-radius:9px;background:#a8dbff;color:#09131e;font-weight:700}}
 ul{{padding-left:22px;line-height:1.9}}.sections{{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}}
-.note{{color:#bdc9d9}}.on{{color:#80e4aa}}.off{{color:#f4c77b}}</style></head>
+.note{{color:#bdc9d9}}.on{{color:#80e4aa}}.off{{color:#f4c77b}}</style><meta http-equiv="refresh" content="30"></head>
 <body><main><header><div><h1>StreamClipper OS</h1><p class="note">Lokales Dashboard · keine Cloud-Verbindung</p></div>
 <div><strong class="{'on' if flag else 'off'}">{'Freigegeben' if flag else 'Gestoppt'}</strong>
 <form method="post" action="/control"><input type="hidden" name="action" value="{action}"><button type="submit">{label}</button></form></div></header>
