@@ -125,10 +125,11 @@ if __name__=='__main__':
     print("TURSO: PERSISTENT STORAGE READY", flush=True)
     from storage_probe import probe
 
-    threading.Thread(
-        target=probe,
-        daemon=True
-    ).start()
+    if os.getenv("STREAMCLIPPER_V58_TEST") != "1":
+        threading.Thread(
+            target=probe,
+            daemon=True
+        ).start()
 
     monitoring = subprocess.Popen([sys.executable, str(Path(__file__).resolve().parent / "service.py"), "--db", "/tmp/streamclipper.sqlite3", "--out", "/tmp/live_clips", "--workers", "1", "--interval", "120", "--persistent-history"])
     with ThreadingHTTPServer(('0.0.0.0',int(os.environ.get('PORT','10000'))),handler('/tmp/streamclipper.sqlite3',os.environ['DASHBOARD_PASSWORD'])) as server:

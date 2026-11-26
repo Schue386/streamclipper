@@ -85,6 +85,14 @@ def main():
             catalog.restore_catalog(db)
             catalog.prepare_tracking(db)
 
+            import os
+            if os.getenv("STREAMCLIPPER_V58_TEST") == "1":
+                from threading import Thread
+                from archive_probe import probe
+
+                Thread(target=probe, daemon=True).start()
+
+
         supervisor=Supervisor(db,args.out,args.workers,args.timeout,args.execute)
         supervisor.persistent_jobs = args.persistent_history
         active=db.execute("SELECT COUNT(*) FROM clip_jobs WHERE status='running'").fetchone()[0]
