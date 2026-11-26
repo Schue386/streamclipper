@@ -113,5 +113,6 @@ def handler(db, password):
 
 if __name__=='__main__':
     os.umask(0o077)
+    monitoring = subprocess.Popen([sys.executable, str(Path(__file__).resolve().parent / "service.py"), "--db", "/tmp/streamclipper.sqlite3", "--out", "/tmp/live_clips", "--workers", "1", "--interval", "120"])
     with ThreadingHTTPServer(('0.0.0.0',int(os.environ.get('PORT','10000'))),handler('/tmp/streamclipper.sqlite3',os.environ['DASHBOARD_PASSWORD'])) as server:
         server.serve_forever()
