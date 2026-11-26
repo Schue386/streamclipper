@@ -13,8 +13,68 @@ def run(*args):
         capture_output=True,
         text=True,
         timeout=45,
-        check=True
+        check=False
     )
+
+    if result.returncode != 0:
+        error = result.stderr.lower()
+
+        patterns = {
+            "CONFIG_MISSING": (
+                "didn't find section",
+                "config section",
+                "config not found"
+            ),
+            "PASSWORD_FORMAT": (
+                "obscured",
+                "base64",
+                "failed to reveal",
+                "decrypt password"
+            ),
+            "AUTHENTICATION": (
+                "login",
+                "invalid password",
+                "authentication",
+                "invalid credentials",
+                "access denied",
+                "enoent"
+            ),
+            "RATE_LIMIT": (
+                "too many",
+                "rate limit",
+                "quota exceeded"
+            ),
+            "NETWORK": (
+                "timeout",
+                "connection refused",
+                "connection reset",
+                "no such host",
+                "tls",
+                "network"
+            ),
+            "VERSION_COMPATIBILITY": (
+                "unknown flag",
+                "not supported",
+                "unknown backend"
+            )
+        }
+
+        matches = [
+            label for label, terms in patterns.items()
+            if any(term in error for term in terms)
+        ]
+
+        print(
+            "MEGA: FAILED COMMAND", args[0],
+            "EXIT", result.returncode,
+            "REASON", ",".join(matches) or "UNKNOWN",
+            flush=True
+        )
+
+        raise subprocess.CalledProcessError(
+            result.returncode, "rclone"
+        )
+
     return result.stdout
 
 
@@ -23,6 +83,21 @@ def probe():
     uploaded = False
 
     try:
+        version = run("version").splitlines()[0]
+
+        print("MEGA: RCLONE VERSION", version, flush=True)
+
+        for key in (
+            "RCLONE_CONFIG_MEGA_TYPE",
+            "RCLONE_CONFIG_MEGA_USER",
+            "RCLONE_CONFIG_MEGA_PASS"
+        ):
+            print(
+                "MEGA: CONFIG", key,
+                "PRESENT" if os.getenv(key) else "MISSING",
+                flush=True
+            )
+
         info = json.loads(run("about", "mega:", "--json"))
 
         print("MEGA: CONNECTION OK", flush=True)
