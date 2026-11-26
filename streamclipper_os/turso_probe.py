@@ -1,12 +1,20 @@
 import os
 import json
 import urllib.request
+import urllib.error
 import urllib.parse
 import uuid
 
 def probe():
     url = os.getenv("TURSO_DATABASE_URL", "")
     token = os.getenv("TURSO_AUTH_TOKEN", "")
+
+    print("TURSO: URL LENGTH", len(url), flush=True)
+    print("TURSO: TOKEN PRESENT", bool(token), flush=True)
+    print("TURSO: URL MATCH", url.strip() in (
+        "libsql://streamclipper-schue386.aws-eu-central-1.turso.io",
+        "https://streamclipper-schue386.aws-eu-central-1.turso.io"
+    ), flush=True)
 
     if not url or not token:
         print("TURSO: CONFIG MISSING", flush=True)
@@ -66,6 +74,10 @@ def probe():
         print("TURSO: READ OK", flush=True)
         print("TURSO: CLEANUP OK", flush=True)
         return True
+
+    except urllib.error.HTTPError as exc:
+        print("TURSO: HTTP STATUS", exc.code, flush=True)
+        return False
 
     except Exception as exc:
         print("TURSO: FAILED " + type(exc).__name__, flush=True)
