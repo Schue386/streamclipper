@@ -53,6 +53,46 @@ def cycle(db, supervisor, *, demo_file=None, poll=True, upload=False, sender=Non
         result['youtube']={'status':'disabled'}
     return result
 
+def sync_persistent_data(db):
+    import turso_jobs as jobs
+    import turso_catalog as catalog
+
+    result = {
+        "jobs": {"status": "waiting_for_history"},
+        "catalog": {"status": "waiting_for_history"}
+    }
+
+    if db.execute(
+        "SELECT COUNT(*) FROM history_pending"
+    ).fetchone()[0]:
+        return result
+
+    for name, module, table in (
+        ("jobs", jobs, "jobs_pending"),
+        ("catalog", catalog, "catalog_pending")
+    ):
+        try:
+            saved = module.save_pending(db)
+
+            pending = db.execute(
+                f"SELECT COUNT(*) FROM {table}"
+            ).fetchone()[0]
+
+            result[name] = {
+                "status": "pending" if pending else "ok",
+                "saved": saved,
+                "pending": pending
+            }
+
+        except (module.StoreError, sqlite3.Error) as exc:
+            result[name] = {
+                "status": "retry_pending",
+                "error": type(exc).__name__
+            }
+
+    return result
+
+
 def main():
     p=argparse.ArgumentParser(description='Single-host StreamClipper OS v9 service')
     p.add_argument('--db',default='streamclipper_os.sqlite3')
@@ -152,6 +192,14 @@ def main():
                             "SELECT COUNT(*) FROM catalog_pending"
                         ).fetchone()[0]
                     }
+
+                if (
+                    args.persistent_history
+                    and os.getenv("STREAMCLIPPER_DATA_SYNC") == "1"
+                    and os.getenv("STREAMCLIPPER_V58_TEST") != "1"
+                    and not supervisor.execute
+                ):
+                    result.update(sync_persistent_data(db))
 
                 if do_poll:next_poll=current+args.interval
                 print(json.dumps(result,ensure_ascii=False),flush=True)
