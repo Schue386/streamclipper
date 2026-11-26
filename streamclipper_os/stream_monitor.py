@@ -101,7 +101,14 @@ def check(db: sqlite3.Connection, demo_file: str | None = None) -> list[dict]:
                                     os.getenv('TWITCH_ACCESS_TOKEN',''))
     # Ignore streams from channels not in the configured watchlist.
     allowed = set(channels)
-    return record_live(db, [s for s in streams if str(s.get('user_login','')).lower() in allowed])
+    current = [s for s in streams if str(s.get("user_login","")).lower() in allowed]
+    events = record_live(db, current)
+    active = {str(s["id"]) for s in current}
+    with db:
+        for sid, channel in db.execute("SELECT stream_id,channel FROM streams WHERE platform=? AND status=?", ("twitch","live")).fetchall():
+            if channel in allowed and sid not in active:
+                db.execute("UPDATE streams SET status=? WHERE platform=? AND stream_id=?", ("offline","twitch",sid))
+    return events
 
 def main() -> None:
     p = argparse.ArgumentParser(description='StreamClipper OS Twitch monitor (no uploads/orders)')
