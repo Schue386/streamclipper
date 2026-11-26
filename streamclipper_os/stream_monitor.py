@@ -74,7 +74,7 @@ def fetch_twitch_live(channels: list[str], client_id: str, access_token: str) ->
                     headers={'Client-Id': client_id, 'Authorization': 'Bearer ' + access_token})
         with urllib.request.urlopen(request, timeout=20) as response:
             payload = json.load(response)
-        if not isinstance(payload.get('data'), list) or payload.get('pagination', {}).get('cursor'):
+        if not isinstance(payload.get('data'), list):
             raise ValueError('Incomplete Twitch response')
         result.extend(payload['data'])
     return result
