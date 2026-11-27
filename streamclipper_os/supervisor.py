@@ -56,12 +56,13 @@ def production_allowed(db, plan, status="queued"):
     if not control_enabled(db):
         return False
 
-    allowed = {
-        c.strip().lower()
-        for c in os.getenv(
-            "STREAMCLIPPER_AUTHORIZED_TWITCH", ""
-        ).split(",")
-    }
+    from source_rights import approved_channels
+    from turso_store import StoreError
+
+    try:
+        allowed = approved_channels()
+    except StoreError:
+        return False
 
     channel = plan["channel"]
     sid = plan["stream_id"]
@@ -120,7 +121,115 @@ class Supervisor:
         self.archive_busy = False
         initialize(db)
 
+    def stop_recording(self, proc):
+        if proc.poll() is not None:
+            return
+
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+        proc.wait(timeout=10)
+
+    def enforce_source_rights(self):
+        from source_rights import approved_channels
+        from turso_store import StoreError
+
+        rows = self.db.execute("""
+            SELECT j.id,j.channel,j.status,
+                   COALESCE(s.enabled,0)
+            FROM clip_jobs j
+            LEFT JOIN streamers s
+              ON s.platform=j.platform
+             AND s.channel=j.channel
+            WHERE j.platform='twitch'
+              AND j.status IN ('queued','running')
+        """).fetchall()
+
+        if not rows:
+            return True, []
+
+        try:
+            allowed = approved_channels()
+            available = True
+        except StoreError:
+            allowed = set()
+            available = False
+
+        stopped = []
+
+        for jid,channel,status,enabled in rows:
+            if enabled and channel in allowed:
+                continue
+
+            if status == "queued":
+                if not available:
+                    continue
+
+            elif jid in self.active:
+                proc,_ = self.active[jid]
+                self.stop_recording(proc)
+
+                with self.db:
+                    self.db.execute("""
+                        UPDATE worker_runs
+                        SET exit_code=?,ended_at=?,
+                            heartbeat_at=?
+                        WHERE job_id=?
+                    """,(proc.returncode,now(),now(),jid))
+
+                del self.active[jid]
+
+            else:
+                continue
+
+            reason = (
+                "Source rights unavailable"
+                if not available
+                else "Source permission revoked or disabled"
+            )
+
+            with self.db:
+                self.db.execute("""
+                    UPDATE clip_jobs
+                    SET status='failed',
+                        error_message=?,finished_at=?
+                    WHERE id=?
+                """,(reason,now(),jid))
+
+            stopped.append({
+                "job_id":jid,
+                "status":"failed",
+                "reason":reason
+            })
+
+            print("SUPERVISOR: SOURCE STOPPED",
+                  jid,flush=True)
+
+        return available,stopped
+
     def tick(self):
+        rights_ok = True
+        stopped = []
+
+        if self.persistent_jobs and (
+            self.execute or self.active
+        ):
+            rights_ok,stopped = (
+                self.enforce_source_rights()
+            )
+
         completed=[]
         for job_id,(proc,deadline) in list(self.active.items()):
             code=proc.poll()
@@ -157,6 +266,7 @@ class Supervisor:
             and control_enabled(self.db)
             and not storage_blocked
             and not self.archive_busy
+            and rights_ok
         ):
             while len(self.active)<self.max_workers:
                 plan=plan_next(self.db,self.output_root)
@@ -229,6 +339,19 @@ class Supervisor:
 
                     except (StoreError, sqlite3.Error) as exc:
                         self.execute = False
+
+                        with self.db:
+                            self.db.execute("""
+                                UPDATE clip_jobs
+                                SET status='failed',
+                                    error_message=?,
+                                    finished_at=?
+                                WHERE id=?
+                            """,(
+                                "Recording blocked before spawn",
+                                now(),job_id
+                            ))
+
                         print(
                             "SUPERVISOR: RECORDING BLOCKED",
                             type(exc).__name__,
@@ -255,7 +378,10 @@ class Supervisor:
                         proc=self.spawn(
                             command,
                             stdout=log,
-                            stderr=subprocess.STDOUT
+                            stderr=subprocess.STDOUT,
+                            **({"start_new_session":True}
+                               if self.persistent_jobs
+                               else {})
                         )
                 except OSError as exc:
                     with self.db:self.db.execute('UPDATE clip_jobs SET status=?,error_message=?,finished_at=? WHERE id=?',
@@ -267,7 +393,7 @@ class Supervisor:
                                     (job_id,getattr(proc,'pid',None),now(),now(),time.time()+self.timeout,str(logpath)))
                 self.active[job_id]=(proc,deadline)
                 launched.append(job_id)
-        return {'enabled':control_enabled(self.db),'active':len(self.active),'launched':launched,'finished':completed,'imports':imported,'storage_blocked':storage_blocked}
+        return {'enabled':control_enabled(self.db),'active':len(self.active),'launched':launched,'finished':stopped+completed,'imports':imported,'storage_blocked':storage_blocked}
 
     def shutdown(self):
         """Graceful shutdown; do not abandon live children without recording status."""

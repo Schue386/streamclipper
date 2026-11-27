@@ -91,7 +91,22 @@ def handler(db, password, production=False):
                     except OSError: memory[key]=None
                 return self.respond(200,json.dumps({'memory':memory,'disk_free':shutil.disk_usage('/tmp').free,'storage':'ephemeral','recording':None if production else False,'production_enabled':production}).encode(),'application/json')
             if self.path!='/': return self.respond(404,b'Not found')
-            page=render(snapshot(db)).replace(b'Lokales Dashboard \xc2\xb7 keine Cloud-Verbindung',b'Render Cloud - fluechtiger Speicher').replace(b'<form method="post" action="/control"',b'<form hidden method="post" action="/control"')
+            data = snapshot(db)
+            from source_rights import approved_channels
+            from turso_store import StoreError
+
+            message = ""
+            try:
+                allowed = approved_channels()
+                for item in data["streamers"]:
+                    if item["platform"] == "twitch":
+                        item["recording_approved"] = (
+                            item["channel"] in allowed
+                        )
+            except StoreError:
+                message = "Aufnahmefreigaben nicht abrufbar"
+
+            page=render(data, message).replace(b'Lokales Dashboard \xc2\xb7 keine Cloud-Verbindung',b'Render Cloud - fluechtiger Speicher').replace(b'<form method="post" action="/control"',b'<form hidden method="post" action="/control"')
             page=page.replace(b'</body>',b'<p><a href="/pilot">Pilot-Ergebnis</a> | <a href="/clip.mp4">Clip herunterladen</a> | <a href="/resources">Ressourcen</a></p><form method="post" action="/pilot"><button>75-Sekunden-Test starten</button></form></body>')
             return self.respond(200,page)
         def do_POST(self):
@@ -148,6 +163,10 @@ if __name__=='__main__':
         initialize_streamers(db)
 
     print("TURSO: PERSISTENT STORAGE READY", flush=True)
+    from source_rights import prepare as prepare_rights
+    prepare_rights()
+    print("TURSO: SOURCE RIGHTS READY", flush=True)
+
     from service import production_configured
 
     production = production_configured()

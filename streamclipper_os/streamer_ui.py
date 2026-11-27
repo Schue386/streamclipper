@@ -58,6 +58,38 @@ def render_streamers(items):
         action = "disable" if active else "enable"
         button = "Deaktivieren" if active else "Aktivieren"
 
+        rights = ""
+
+        if "recording_approved" in item:
+            approved = item["recording_approved"]
+            rights_label = (
+                "Freigegeben" if approved
+                else "Nicht freigegeben"
+            )
+            rights_action = (
+                "revoke_recording" if approved
+                else "grant_recording"
+            )
+            rights_button = (
+                "Aufnahmefreigabe widerrufen" if approved
+                else "Aufnahme + Archiv freigeben"
+            )
+            rights = f"""
+            <p>Aufnahmerechte: {rights_label}</p>
+            <form method="post" action="/streamers">
+              <input type="hidden" name="platform"
+                     value="{platform}">
+              <input type="hidden" name="channel"
+                     value="{channel}">
+              <button name="action"
+                      value="{rights_action}">
+                {rights_button}
+              </button>
+            </form>
+            <small>Nur bei vorliegender Nutzungsberechtigung.
+            Freigabe wird in Turso gespeichert.</small>
+            """
+
         rows.append(f"""
         <article>
           <small>{platform.upper()}</small>
@@ -73,6 +105,7 @@ def render_streamers(items):
           <small>Letzte Statusprüfung:
           {e(local_time(item.get("checked_at")))}</small><br>
           <small>{e(item.get("error"))}</small>
+          {rights}
           <form method="post" action="/streamers">
             <input type="hidden" name="platform" value="{platform}">
             <input type="hidden" name="channel" value="{channel}">

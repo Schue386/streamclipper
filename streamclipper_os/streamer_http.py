@@ -4,6 +4,7 @@ import sqlite3
 from contextlib import closing
 from urllib.parse import parse_qs
 from stream_monitor import connect
+from source_rights import set_approval
 from turso_store import manage_persistent, StoreError
 
 def handle_streamers(handler, db_path):
@@ -41,12 +42,23 @@ def handle_streamers(handler, db_path):
                 raise ValueError("Invalid fields")
 
         with closing(connect(db_path)) as db:
-            manage_persistent(
-                db,
-                fields["platform"][0],
-                fields["channel"][0],
-                fields["action"][0]
-            )
+            platform = fields["platform"][0]
+            channel = fields["channel"][0]
+            action = fields["action"][0]
+
+            if action in ("grant_recording",
+                          "revoke_recording"):
+                set_approval(
+                    platform, channel,
+                    action == "grant_recording"
+                )
+            else:
+                if action == "remove" and platform == "twitch":
+                    set_approval(platform, channel, False)
+
+                manage_persistent(
+                    db, platform, channel, action
+                )
 
     except (ValueError, UnicodeError):
         return handler.respond(400, b"Invalid streamer request")

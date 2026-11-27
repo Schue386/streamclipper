@@ -75,21 +75,6 @@ def run_archive_cycle(db_path):
 
 def production_configured():
     import os
-    import re
-
-    channels = {
-        c.strip().lower()
-        for c in os.getenv(
-            "STREAMCLIPPER_AUTHORIZED_TWITCH", ""
-        ).split(",") if c.strip()
-    }
-
-    archive = {
-        c.strip().lower()
-        for c in os.getenv(
-            "STREAMCLIPPER_ARCHIVE_TWITCH", ""
-        ).split(",") if c.strip()
-    }
 
     return (
         os.getenv("STREAMCLIPPER_PRODUCTION") == "1"
@@ -98,12 +83,6 @@ def production_configured():
         and os.getenv("STREAMCLIPPER_V58_TEST") != "1"
         and not os.getenv("STREAMCLIPPER_VERIFY_CLIP_ID")
         and not os.getenv("STREAMCLIPPER_WEBHOOK")
-        and len(channels) == 1
-        and channels == archive
-        and all(
-            re.fullmatch(r"[a-z0-9_]{1,25}", c)
-            for c in channels
-        )
     )
 
 
@@ -139,9 +118,14 @@ def queue_production(db, supervisor, result):
         ).fetchone()[0]:
             return 0
 
-    channels = os.getenv(
-        "STREAMCLIPPER_AUTHORIZED_TWITCH", ""
-    ).split(",")
+    from source_rights import approved_channels
+    from turso_store import StoreError
+
+    try:
+        channels = approved_channels()
+    except StoreError:
+        result["queue_error"] = "Source rights unavailable"
+        return 0
 
     return enqueue_production(db, channels)
 

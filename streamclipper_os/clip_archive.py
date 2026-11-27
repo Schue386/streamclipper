@@ -10,19 +10,9 @@ from turso_jobs import decode_value
 
 
 def archive_permission_filter():
-    import os
+    from source_rights import approved_channels
 
-    def channels(key):
-        return {
-            c.strip().lower()
-            for c in os.getenv(key, "").split(",")
-            if c.strip()
-        }
-
-    allowed = sorted(
-        channels("STREAMCLIPPER_AUTHORIZED_TWITCH")
-        & channels("STREAMCLIPPER_ARCHIVE_TWITCH")
-    )
+    allowed = sorted(approved_channels())
 
     if not allowed or any(
         not re.fullmatch(r"[a-z0-9_]{1,25}", c)
