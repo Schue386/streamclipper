@@ -88,7 +88,7 @@ def production_configured():
 
 def queue_production(db, supervisor, result):
     import os
-    from clip_jobs import enqueue_production
+    from clip_jobs import enqueue_production, enqueue_followup
 
     if not supervisor.persistent_jobs:
         return 0
@@ -127,7 +127,20 @@ def queue_production(db, supervisor, result):
         result["queue_error"] = "Source rights unavailable"
         return 0
 
-    return enqueue_production(db, channels)
+    # No new recording may race the archive thread or pending sync.
+    if supervisor.archive_busy or supervisor.active:
+        return 0
+    created = enqueue_production(db, channels)
+    if created:
+        return created
+    try:
+        return enqueue_followup(db, channels)
+    except (StoreError, sqlite3.Error) as exc:
+        # Remote UPDATE may have succeeded before a connection failed. Fail closed.
+        supervisor.execute = False
+        result["queue_error"] = "Cycle state uncertain; restart required"
+        log.warning("Followup stopped: %s", type(exc).__name__)
+        return 0
 
 
 def sync_persistent_data(db):
@@ -252,7 +265,7 @@ def main():
 
                 set_enabled(db, True)
                 print("PRODUCTION: ENABLED", flush=True)
-                print("PRODUCTION: v60.6.2 PILOT recording_limit_min=30 worker_timeout_s=2700 workers=1", flush=True)
+                print("PRODUCTION: v60.6.3 PILOT recording_limit_min=30 worker_timeout_s=2700 workers=1 sequential_cycles=1", flush=True)
 
         next_poll=0.0
         archive_thread = None

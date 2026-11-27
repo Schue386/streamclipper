@@ -199,7 +199,10 @@ def save_pending(db):
         else:
             sql = f"""
                 INSERT INTO worker_runs ({fields})
-                VALUES ({placeholders})
+                SELECT {placeholders}
+                WHERE EXISTS (SELECT 1 FROM clip_jobs j
+                    WHERE j.id=? AND j.output_dir || '/supervisor.log' = ?
+                      AND j.status IN ('running','completed','failed'))
                 ON CONFLICT(job_id)
                 DO UPDATE SET {updates}
                 WHERE worker_runs.pid IS excluded.pid
@@ -219,7 +222,7 @@ def save_pending(db):
             """
 
             results = execute([
-                (sql, tuple(row[:-1]))
+                (sql, (*row[:-1], row[0], row[7]))
                 for row in rows
             ])
 
@@ -303,6 +306,7 @@ def restore_jobs(db):
     initialize(db)
     prepare()
     prepare_reservations()
+    prepare_cycles()
 
     datasets = []
 
@@ -410,4 +414,24 @@ def reserve_production_job(job_id, stream_id, channel, owner):
     if len(rows) != 1 or decode_value(rows[0][0]) != owner:
         raise StoreError("Invalid production reservation")
 
+    return True
+
+
+CYCLE_SCHEMA = 'CREATE TABLE IF NOT EXISTS recording_cycles (\n    job_id INTEGER NOT NULL, attempt INTEGER NOT NULL,\n    platform TEXT NOT NULL, stream_id TEXT NOT NULL, channel TEXT NOT NULL,\n    status TEXT NOT NULL, output_dir TEXT, error_message TEXT,\n    created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,\n    pid INTEGER, worker_started_at TEXT NOT NULL, heartbeat_at TEXT NOT NULL,\n    deadline_at REAL NOT NULL, exit_code INTEGER, ended_at TEXT,\n    log_path TEXT NOT NULL,\n    PRIMARY KEY(job_id, attempt)\n)'
+CYCLE_TRIGGER = "CREATE TRIGGER IF NOT EXISTS archive_recording_cycle_v6063\nBEFORE UPDATE OF status ON clip_jobs\nWHEN OLD.status='completed' AND NEW.status='queued'\nBEGIN\n    SELECT CASE WHEN NEW.attempts != OLD.attempts+1\n        OR OLD.attempts < 1 OR OLD.finished_at IS NULL\n        OR NOT EXISTS (SELECT 1 FROM worker_runs w WHERE w.job_id=OLD.id\n                       AND w.exit_code=0 AND w.ended_at IS NOT NULL)\n        THEN RAISE(ABORT,'invalid cycle transition') END;\n    INSERT INTO recording_cycles\n        (job_id,attempt,platform,stream_id,channel,status,output_dir,error_message,\n         created_at,started_at,finished_at,pid,worker_started_at,heartbeat_at,\n         deadline_at,exit_code,ended_at,log_path)\n        SELECT OLD.id,OLD.attempts,OLD.platform,OLD.stream_id,OLD.channel,\n               OLD.status,OLD.output_dir,OLD.error_message,OLD.created_at,\n               OLD.started_at,OLD.finished_at,w.pid,w.started_at,w.heartbeat_at,\n               w.deadline_at,w.exit_code,w.ended_at,w.log_path\n        FROM worker_runs w WHERE w.job_id=OLD.id;\n    DELETE FROM worker_runs WHERE job_id=OLD.id;\n    DELETE FROM job_reservations WHERE platform=OLD.platform AND stream_id=OLD.stream_id;\nEND"
+REQUEUE_SQL = "UPDATE clip_jobs AS j\nSET status='queued', attempts=attempts+1,\n    started_at=NULL, finished_at=NULL, output_dir=NULL, error_message=NULL\nWHERE j.id=? AND j.platform='twitch' AND j.stream_id=? AND j.channel=?\n  AND j.status='completed' AND j.attempts=? AND j.attempts>=1\n  AND j.finished_at IS NOT NULL\n  AND EXISTS (SELECT 1 FROM worker_runs w WHERE w.job_id=j.id\n              AND w.exit_code=0 AND w.ended_at IS NOT NULL)\n  AND NOT EXISTS (SELECT 1 FROM clip_jobs a WHERE a.status IN ('queued','running'))\n  AND NOT EXISTS (\n      SELECT 1 FROM job_reservations r\n      LEFT JOIN clip_jobs x ON x.platform=r.platform AND x.stream_id=r.stream_id\n      WHERE x.id IS NULL OR x.status NOT IN ('completed','failed')\n  )\n  AND NOT EXISTS (\n      SELECT 1 FROM clips c JOIN clip_review r ON r.clip_id=c.clip_id\n      LEFT JOIN clip_media m ON m.clip_id=c.clip_id\n      WHERE c.platform=j.platform AND c.stream_id=j.stream_id\n        AND r.quality_status='passed' AND m.clip_id IS NULL\n  )\nRETURNING id,attempts"
+
+
+def prepare_cycles():
+    execute([(CYCLE_SCHEMA, ()), (CYCLE_TRIGGER, ())])
+
+
+def requeue_completed(job_id, stream_id, channel, attempt):
+    """Atomic remote compare-and-set; old evidence archived by trigger."""
+    result = execute([(REQUEUE_SQL, (job_id, stream_id, channel, attempt))])[0]
+    rows = result["rows"]
+    if not rows:
+        return False
+    if len(rows) != 1 or tuple(decode_value(c) for c in rows[0]) != (job_id, attempt+1):
+        raise StoreError("Invalid cycle reservation response")
     return True

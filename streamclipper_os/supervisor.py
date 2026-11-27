@@ -289,6 +289,15 @@ class Supervisor:
                 with self.db:self.db.execute('UPDATE worker_runs SET heartbeat_at=? WHERE job_id=?',(now(),job_id))
                 continue
             status='completed' if code==0 and error is None else 'failed'
+            live_result = None
+            if self.persistent_jobs:
+                row = self.db.execute('SELECT output_dir FROM clip_jobs WHERE id=?', (job_id,)).fetchone()
+                live_result = read_live_result(row[0] if row else None)
+                if status == 'completed' and live_result['outcome'] in (
+                    'no_media','capture_incomplete','summary_missing',
+                    'summary_incomplete','summary_missing_or_invalid'
+                ):
+                    status, error = 'failed', 'Live capture evidence: ' + live_result['outcome']
             with self.db:
                 self.db.execute('UPDATE clip_jobs SET status=?,error_message=?,finished_at=? WHERE id=?',
                                 (status,error,now(),job_id))
@@ -296,8 +305,7 @@ class Supervisor:
                                 (code,now(),now(),job_id))
             item = {'job_id':job_id,'status':status,'exit_code':code}
             if self.persistent_jobs:
-                row = self.db.execute('SELECT output_dir FROM clip_jobs WHERE id=?', (job_id,)).fetchone()
-                item['live'] = read_live_result(row[0] if row else None)
+                item['live'] = live_result
             completed.append(item)
             del self.active[job_id]
         imported=import_completed(self.db) if completed else {'imported':0}
@@ -355,8 +363,9 @@ class Supervisor:
                         )
                         break
 
+                attempt_sql = 'CASE WHEN attempts=0 THEN 1 ELSE attempts END' if self.persistent_jobs else 'attempts+1'
                 with self.db:
-                    claim=self.db.execute("UPDATE clip_jobs SET status='running',attempts=attempts+1,started_at=?,output_dir=? WHERE id=? AND status='queued'",
+                    claim=self.db.execute(f"UPDATE clip_jobs SET status='running',attempts={attempt_sql},started_at=?,output_dir=? WHERE id=? AND status='queued'",
                                           (now(),str(out),job_id))
                 if claim.rowcount != 1:
                     if self.persistent_jobs:

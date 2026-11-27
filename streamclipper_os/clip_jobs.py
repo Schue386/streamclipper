@@ -48,7 +48,7 @@ def enqueue_detected(db: sqlite3.Connection) -> int:
 def plan_next(db: sqlite3.Connection, output_root: str = "live_clips"):
     from adaptive import choose
     rows = db.execute("""
-        SELECT j.id,j.channel,j.stream_id,j.platform,j.created_at FROM clip_jobs j
+        SELECT j.id,j.channel,j.stream_id,j.platform,j.created_at,j.attempts FROM clip_jobs j
         JOIN streamers w ON w.platform=j.platform AND w.channel=j.channel
         JOIN streams s ON s.platform=j.platform AND s.stream_id=j.stream_id
         WHERE j.status='queued' AND w.enabled=1 AND s.status='live' ORDER BY j.id
@@ -57,7 +57,8 @@ def plan_next(db: sqlite3.Connection, output_root: str = "live_clips"):
     if row is None:
         return None
     job_id, channel, stream_id = row[:3]
-    output = Path(output_root) / f"{channel}_{stream_id}"
+    suffix = f"_cycle{row[5]}" if row[5] >= 2 else ""
+    output = Path(output_root) / f"{channel}_{stream_id}{suffix}"
     command = ["streamclipper", "live", "--url",
                f"https://www.twitch.tv/{channel}", "--out", str(output), "--render", "--no-draft", "--long-clips"]
     return {"job_id": job_id, "channel": channel, "stream_id": stream_id,
@@ -219,3 +220,57 @@ def enqueue_production(db, authorized_channels):
         ))
 
         return cursor.rowcount
+
+
+def enqueue_followup(db, authorized_channels):
+    """Resume a completed stream session only after remote atomic requeue."""
+    import re
+    from streamer_status import resolve
+    from turso_jobs import requeue_completed, StoreError
+
+    allowed = {c.strip().lower() for c in authorized_channels if c.strip()}
+    if any(not re.fullmatch(r"[a-z0-9_]{1,25}", c) for c in allowed):
+        raise ValueError("Invalid authorized channel")
+    if not allowed:
+        return 0
+    # The caller runs only on a fresh successful poll with all pending data saved.
+    if db.execute("SELECT 1 FROM clip_jobs WHERE status IN ('queued','running') LIMIT 1").fetchone():
+        return 0
+    rows = db.execute("""
+        SELECT j.id,j.stream_id,j.channel,j.attempts,s.last_seen_at,p.status,p.checked_at
+        FROM clip_jobs j
+        JOIN worker_runs w ON w.job_id=j.id
+        JOIN streams s ON s.platform=j.platform AND s.stream_id=j.stream_id AND s.channel=j.channel
+        JOIN streamers u ON u.platform=j.platform AND u.channel=j.channel
+        JOIN streamer_status p ON p.platform=j.platform AND p.channel=j.channel
+        WHERE j.platform='twitch' AND j.status='completed' AND j.attempts>=1
+          AND j.finished_at IS NOT NULL AND w.exit_code=0 AND w.ended_at IS NOT NULL
+          AND s.status='live' AND u.enabled=1
+          AND NOT EXISTS (
+              SELECT 1 FROM clips c JOIN clip_review r ON r.clip_id=c.clip_id
+              LEFT JOIN clip_media m ON m.clip_id=c.clip_id
+              WHERE c.platform=j.platform AND c.stream_id=j.stream_id
+                AND r.quality_status='passed' AND m.clip_id IS NULL
+          )
+        ORDER BY j.finished_at,j.id
+    """).fetchall()
+    for jid,sid,channel,attempt,last_seen,status,checked in rows:
+        if channel not in allowed or not re.fullmatch(r"[0-9]{1,40}", sid):
+            continue
+        if resolve(status,checked,180) != "live" or resolve("live",last_seen,180) != "live":
+            continue
+        if not requeue_completed(jid,sid,channel,attempt):
+            # Remote and local state may differ, never overwrite blindly.
+            continue
+        with db:
+            changed = db.execute("""
+                UPDATE clip_jobs SET status='queued',attempts=attempts+1,
+                    started_at=NULL,finished_at=NULL,output_dir=NULL,error_message=NULL
+                WHERE id=? AND status='completed' AND attempts=?
+            """, (jid,attempt)).rowcount
+            if changed != 1:
+                raise StoreError("Local cycle state conflict; restart required")
+            db.execute("DELETE FROM worker_runs WHERE job_id=?", (jid,))
+        print("PRODUCTION: FOLLOWUP QUEUED", jid, channel, "cycle", attempt+1, flush=True)
+        return 1
+    return 0
