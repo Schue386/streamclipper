@@ -188,7 +188,7 @@ def main():
         if (
             not production_configured()
             or args.workers != 1
-            or args.timeout != 900
+            or args.timeout != 2700
             or args.demo_file
             or args.once
         ):
@@ -252,6 +252,7 @@ def main():
 
                 set_enabled(db, True)
                 print("PRODUCTION: ENABLED", flush=True)
+                print("PRODUCTION: v60.6.2 PILOT recording_limit_min=30 worker_timeout_s=2700 workers=1", flush=True)
 
         next_poll=0.0
         archive_thread = None

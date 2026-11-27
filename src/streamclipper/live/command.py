@@ -144,6 +144,8 @@ class LiveRun:
             "end_reason": self.ingest.end_reason,
             "chat_messages": self.chat.count if self.chat is not None else 0,
             "clips": len(self.worker.clips),
+            "judged_moments": len(self.engine.judged),
+            "selected_moments": len(self.engine.moments),
             "failed_or_skipped": self.worker.failed,
             "latency_median_s": round(statistics.median(lat), 1) if lat else None,
             "latency_max_s": max(lat) if lat else None,

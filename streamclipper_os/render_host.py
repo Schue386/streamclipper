@@ -17,7 +17,7 @@ def monitoring_command(production=False):
     ]
 
     if production:
-        command.extend(["--execute", "--timeout", "900"])
+        command.extend(["--execute", "--timeout", "2700"])
 
     return command
 

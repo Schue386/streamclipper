@@ -107,6 +107,50 @@ def production_allowed(db, plan, status="queued"):
     )
 
 
+def read_live_result(output_dir):
+    """Report real worker evidence without changing job status or import rules."""
+    if not output_dir:
+        return {'outcome': 'summary_missing'}
+    try:
+        data = json.loads((Path(output_dir) / 'live_summary.json').read_text(encoding='utf-8'))
+        if not isinstance(data, dict):
+            raise ValueError('invalid summary')
+        keys = ('buffered_s', 'wall_s', 'segments', 'segments_deleted',
+                'windows_deleted', 'disk_gb', 'reconnects', 'clips',
+                'failed_or_skipped', 'gate_pass', 'judged_moments', 'selected_moments')
+        result = {k: data[k] for k in keys
+                  if k in data and type(data[k]) in (int, float)}
+        required = ('buffered_s', 'clips', 'failed_or_skipped',
+                    'judged_moments', 'selected_moments')
+        if any(k not in result or result[k] < 0 for k in required):
+            return {'outcome': 'summary_incomplete', **result}
+        reason = data.get('end_reason')
+        if reason == 'stopped':
+            result['end_kind'] = 'stop_requested'
+        elif reason == 'the stream is offline':
+            result['end_kind'] = 'stream_offline'
+        elif reason == 'the source file has been played to the end':
+            result['end_kind'] = 'file_end'
+        else:
+            result['end_kind'] = 'ingest_problem_or_unknown'
+        # Do not echo raw ingest exceptions: they may contain source credentials.
+        if result['buffered_s'] <= 0:
+            outcome = 'no_media'
+        elif result['end_kind'] == 'ingest_problem_or_unknown':
+            outcome = 'capture_incomplete'
+        elif result['clips'] > 0:
+            outcome = 'clips_created'
+        elif result['failed_or_skipped'] > 0 or result['selected_moments'] > 0:
+            outcome = 'no_clip_after_selection'
+        elif result['judged_moments'] > 0:
+            outcome = 'no_moment_selected'
+        else:
+            outcome = 'no_moment_judged'
+        return {'outcome': outcome, **result}
+    except (OSError, ValueError, TypeError):
+        return {'outcome': 'summary_missing_or_invalid'}
+
+
 class Supervisor:
     def __init__(self,db,output_root='live_clips',max_workers=2,timeout=7200,
                  execute=False,popen_factory=None):
@@ -250,7 +294,11 @@ class Supervisor:
                                 (status,error,now(),job_id))
                 self.db.execute('UPDATE worker_runs SET exit_code=?,ended_at=?,heartbeat_at=? WHERE job_id=?',
                                 (code,now(),now(),job_id))
-            completed.append({'job_id':job_id,'status':status})
+            item = {'job_id':job_id,'status':status,'exit_code':code}
+            if self.persistent_jobs:
+                row = self.db.execute('SELECT output_dir FROM clip_jobs WHERE id=?', (job_id,)).fetchone()
+                item['live'] = read_live_result(row[0] if row else None)
+            completed.append(item)
             del self.active[job_id]
         imported=import_completed(self.db) if completed else {'imported':0}
         launched=[]
@@ -365,7 +413,7 @@ class Supervisor:
 
                         if self.persistent_jobs:
                             command.extend([
-                                "--stop-after", "5",
+                                "--stop-after", "30",
                                 "--buffer-min", "5",
                                 "--max-clips-per-hour", "2",
                                 "--ratio", "9:16",
