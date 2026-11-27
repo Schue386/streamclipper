@@ -18,6 +18,8 @@ from youtube_monitor import check as check_youtube
 from clip_jobs import enqueue_detected
 from supervisor import Supervisor
 from control import enabled as control_enabled
+from runtime_recovery import recover, recovery_details, write_state
+from turso_store import StoreError
 
 log = logging.getLogger('streamclipper.service')
 
@@ -261,11 +263,18 @@ def main():
 
             if args.execute:
                 if active:
-                    p.error("Unresolved recording jobs")
+                    supervisor.execute = False
+                    print("PRODUCTION: RECOVERY BLOCKED", json.dumps(recovery_details(db)), flush=True)
+                else:
+                    set_enabled(db, True)
+                    print("PRODUCTION: ENABLED", flush=True)
+                print("PRODUCTION: v60.6.4 PILOT recording_limit_min=30 worker_timeout_s=2700 workers=1 sequential_cycles=1", flush=True)
 
-                set_enabled(db, True)
-                print("PRODUCTION: ENABLED", flush=True)
-                print("PRODUCTION: v60.6.3 PILOT recording_limit_min=30 worker_timeout_s=2700 workers=1 sequential_cycles=1", flush=True)
+        recovery_pending = bool(args.persistent_history and args.execute and active)
+        recovery_uncertain = False
+        recovery_reason = 'awaiting_confirmation' if recovery_pending else ''
+        write_state(args.db, 'running', 'blocked' if recovery_pending else ('enabled' if supervisor.execute else 'disabled'),
+                    recovery_details(db) if recovery_pending else (), recovery_reason)
 
         next_poll=0.0
         archive_thread = None
@@ -314,7 +323,31 @@ def main():
                     and os.getenv("STREAMCLIPPER_DATA_SYNC") == "1"
                     and os.getenv("STREAMCLIPPER_V58_TEST") != "1"
                 ):
-                    if do_poll and not args.demo_file:
+                    if recovery_pending and do_poll and result.get('poll') == 'ok' and result.get('history',{}).get('status') == 'ok':
+                        if not recovery_uncertain:
+                            try:
+                                if any(db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                                       for table in ('history_pending','jobs_pending','catalog_pending')):
+                                    recovery_reason = 'pending_sync'
+                                else:
+                                    recovery_reason = recover(db)
+                                    if recovery_reason.startswith('recovered_'):
+                                        # Exact job transition persisted first; sync local copy before launching.
+                                        recovered_sync = sync_persistent_data(db)
+                                        if recovered_sync.get('jobs',{}).get('status') == 'ok':
+                                            recovery_pending = False
+                                            supervisor.execute = True
+                                            set_enabled(db, True)
+                                            print('PRODUCTION: RECORDING RESUMED', flush=True)
+                                        else:
+                                            recovery_uncertain = True
+                                            recovery_reason = 'recovered_sync_uncertain_restart_required'
+                            except (StoreError, sqlite3.Error, ValueError, OSError) as exc:
+                                recovery_uncertain = True
+                                recovery_reason = 'recovery_uncertain_restart_required'
+                                log.warning('Recovery stopped: %s',type(exc).__name__)
+                        result['recovery'] = {'status':recovery_reason,'jobs':recovery_details(db)}
+                    if do_poll and not args.demo_file and not recovery_pending:
                         try:
                             result["queued"] = queue_production(
                                 db, supervisor, result
@@ -322,7 +355,8 @@ def main():
                         except (ValueError, sqlite3.Error) as exc:
                             result["queue_error"] = type(exc).__name__
 
-                    result.update(sync_persistent_data(db))
+                    if not recovery_pending:
+                        result.update(sync_persistent_data(db))
 
                 if (
                     do_poll
@@ -343,6 +377,9 @@ def main():
                         )
                         archive_thread.start()
 
+                write_state(args.db,'running',
+                    'blocked' if recovery_pending or (args.execute and not supervisor.execute) else ('enabled' if supervisor.execute and control_enabled(db) else 'disabled'),
+                    recovery_details(db) if recovery_pending else (), recovery_reason)
                 if do_poll:next_poll=current+args.interval
                 print(json.dumps(result,ensure_ascii=False),flush=True)
                 if args.once:break

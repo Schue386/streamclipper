@@ -1,5 +1,7 @@
 """Public health endpoint; authenticated read-only dashboard for Render pilot."""
-import os, hmac, base64, json, shutil, subprocess, sys, threading, tempfile
+import os, hmac, base64, json, shutil, subprocess, sys, threading, tempfile, time
+from html import escape
+from runtime_recovery import read_state, heartbeat_path
 from pathlib import Path
 from http.server import ThreadingHTTPServer
 from dashboard import make_handler, snapshot, render
@@ -22,7 +24,12 @@ def monitoring_command(production=False):
     return command
 
 
-def handler(db, password, production=False):
+def handler(db, password, production=False, monitoring=None, launched_at=None):
+    def monitor_state():
+        return read_state(db, monitoring, launched_at)
+    def health_status():
+        state=monitor_state()
+        return (200 if state["phase"] in ("running","starting") else 503), state
     if len(password)<10: raise ValueError('Dashboard password must have at least 10 characters')
     expected='Basic '+base64.b64encode(('admin:'+password).encode()).decode()
     lock=threading.Lock()
@@ -61,7 +68,8 @@ def handler(db, password, production=False):
     class Handler(make_handler(db)):
         def do_HEAD(self):
             if self.path.split("?",1)[0] == "/health":
-                self.send_response(200)
+                code, _ = health_status()
+                self.send_response(code)
                 self.send_header("Content-Type","application/json")
                 self.send_header("Cache-Control","no-store")
                 self.end_headers()
@@ -71,7 +79,9 @@ def handler(db, password, production=False):
         def do_GET(self):
             self.path=self.path.split("?",1)[0]
             if self.path=='/health':
-                return self.respond(200,b'{"status":"ok"}','application/json')
+                code,state=health_status()
+                return self.respond(code,json.dumps({'status':'ok' if code==200 else 'unhealthy',
+                    'monitor':state['phase'],'recording':state['recording']}).encode(),'application/json')
             if not hmac.compare_digest(self.headers.get('Authorization','').encode(),expected.encode()):
                 self.send_response(401); self.send_header('WWW-Authenticate','Basic realm="StreamClipper"'); self.send_header('Content-Length','0'); self.end_headers(); return
             if self.path=='/clip.mp4':
@@ -95,7 +105,14 @@ def handler(db, password, production=False):
             from source_rights import approved_channels
             from turso_store import StoreError
 
-            message = ""
+            state = monitor_state()
+            labels = {'running':'aktiv','starting':'startet','stopped':'ausgefallen','stale':'keine aktuelle Rückmeldung'}
+            modes = {'enabled':'freigegeben','blocked':'gesperrt','disabled':'deaktiviert'}
+            message = 'Überwachung: '+labels.get(state['phase'],'unbekannt')+' | Aufnahme: '+modes.get(state['recording'],'unbekannt')
+            if state.get('reason'):
+                message += ' | '+str(state['reason'])
+            if state.get('unresolved'):
+                message += ' | Alte Aufträge: '+', '.join('#'+str(x['job_id'])+' '+x['channel']+' (Bestätigung: '+x['key']+')' for x in state['unresolved'])
             try:
                 allowed = approved_channels()
                 for item in data["streamers"]:
@@ -104,7 +121,7 @@ def handler(db, password, production=False):
                             item["channel"] in allowed
                         )
             except StoreError:
-                message = "Aufnahmefreigaben nicht abrufbar"
+                message += " | Aufnahmefreigaben nicht abrufbar"
 
             page=render(data, message).replace(b'Lokales Dashboard \xc2\xb7 keine Cloud-Verbindung',b'Render Cloud - fluechtiger Speicher').replace(b'<form method="post" action="/control"',b'<form hidden method="post" action="/control"')
             page=page.replace(b'</body>',b'<p><a href="/pilot">Pilot-Ergebnis</a> | <a href="/clip.mp4">Clip herunterladen</a> | <a href="/resources">Ressourcen</a></p><form method="post" action="/pilot"><button>75-Sekunden-Test starten</button></form></body>')
@@ -189,6 +206,8 @@ if __name__=='__main__':
             daemon=True
         ).start()
 
+    heartbeat_path('/tmp/streamclipper.sqlite3').unlink(missing_ok=True)
+    launched_at = time.time()
     monitoring = subprocess.Popen(monitoring_command(production))
-    with ThreadingHTTPServer(('0.0.0.0',int(os.environ.get('PORT','10000'))),handler('/tmp/streamclipper.sqlite3',os.environ['DASHBOARD_PASSWORD'],production)) as server:
+    with ThreadingHTTPServer(('0.0.0.0',int(os.environ.get('PORT','10000'))),handler('/tmp/streamclipper.sqlite3',os.environ['DASHBOARD_PASSWORD'],production,monitoring,launched_at)) as server:
         server.serve_forever()
