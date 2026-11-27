@@ -1,7 +1,9 @@
 """Public health endpoint; authenticated read-only dashboard for Render pilot."""
 import os, hmac, base64, json, shutil, subprocess, sys, threading, tempfile, time
 from html import escape
-from runtime_recovery import read_state, heartbeat_path
+from runtime_recovery import (read_state, heartbeat_path, clear_confirmation,
+                              recovery_form, handle_recovery_request)
+import secrets
 from pathlib import Path
 from http.server import ThreadingHTTPServer
 from dashboard import make_handler, snapshot, render
@@ -32,6 +34,7 @@ def handler(db, password, production=False, monitoring=None, launched_at=None):
         return (200 if state["phase"] in ("running","starting") else 503), state
     if len(password)<10: raise ValueError('Dashboard password must have at least 10 characters')
     expected='Basic '+base64.b64encode(('admin:'+password).encode()).decode()
+    recovery_csrf = secrets.token_urlsafe(32)
     lock=threading.Lock()
     result={'status':'not_run'}
     preview=Path(tempfile.mkdtemp(prefix='sc-preview-'))/'clip.mp4'
@@ -125,11 +128,18 @@ def handler(db, password, production=False, monitoring=None, launched_at=None):
 
             page=render(data, message).replace(b'Lokales Dashboard \xc2\xb7 keine Cloud-Verbindung',b'Render Cloud - fluechtiger Speicher').replace(b'<form method="post" action="/control"',b'<form hidden method="post" action="/control"')
             page=page.replace(b'</body>',b'<p><a href="/pilot">Pilot-Ergebnis</a> | <a href="/clip.mp4">Clip herunterladen</a> | <a href="/resources">Ressourcen</a></p><form method="post" action="/pilot"><button>75-Sekunden-Test starten</button></form></body>')
+            if production:
+                form = recovery_form(db, state, recovery_csrf)
+                if form:
+                    page = page.replace(b'<div class="grid">', form+b'<div class="grid">', 1)
             return self.respond(200,page)
         def do_POST(self):
-            if self.path not in ('/pilot','/video-test','/streamers'): return self.respond(405,b'Read-only pilot')
+            if self.path not in ('/pilot','/video-test','/streamers','/recover-recording'): return self.respond(405,b'Read-only pilot')
             if not hmac.compare_digest(self.headers.get('Authorization','').encode(),expected.encode()): return self.respond(401,b'Unauthorized')
             if self.path=='/streamers': return handle_streamers(self, db)
+            if self.path=='/recover-recording':
+                if not production: return self.respond(409,b'Production disabled')
+                return handle_recovery_request(self, db, monitor_state, recovery_csrf)
 
             if production and self.path in (
                 "/pilot", "/video-test"
@@ -207,6 +217,7 @@ if __name__=='__main__':
         ).start()
 
     heartbeat_path('/tmp/streamclipper.sqlite3').unlink(missing_ok=True)
+    clear_confirmation('/tmp/streamclipper.sqlite3')
     launched_at = time.time()
     monitoring = subprocess.Popen(monitoring_command(production))
     with ThreadingHTTPServer(('0.0.0.0',int(os.environ.get('PORT','10000'))),handler('/tmp/streamclipper.sqlite3',os.environ['DASHBOARD_PASSWORD'],production,monitoring,launched_at)) as server:

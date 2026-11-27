@@ -18,7 +18,7 @@ from youtube_monitor import check as check_youtube
 from clip_jobs import enqueue_detected
 from supervisor import Supervisor
 from control import enabled as control_enabled
-from runtime_recovery import recover, recovery_details, write_state
+from runtime_recovery import recover, recovery_details, write_state, clear_confirmation
 from turso_store import StoreError
 
 log = logging.getLogger('streamclipper.service')
@@ -268,7 +268,7 @@ def main():
                 else:
                     set_enabled(db, True)
                     print("PRODUCTION: ENABLED", flush=True)
-                print("PRODUCTION: v60.6.4 PILOT recording_limit_min=30 worker_timeout_s=2700 workers=1 sequential_cycles=1", flush=True)
+                print("PRODUCTION: v60.6.5 PILOT recording_limit_min=30 worker_timeout_s=2700 workers=1 sequential_cycles=1 dashboard_recovery=1", flush=True)
 
         recovery_pending = bool(args.persistent_history and args.execute and active)
         recovery_uncertain = False
@@ -330,7 +330,7 @@ def main():
                                        for table in ('history_pending','jobs_pending','catalog_pending')):
                                     recovery_reason = 'pending_sync'
                                 else:
-                                    recovery_reason = recover(db)
+                                    recovery_reason = recover(db, args.db)
                                     if recovery_reason.startswith('recovered_'):
                                         # Exact job transition persisted first; sync local copy before launching.
                                         recovered_sync = sync_persistent_data(db)
@@ -338,6 +338,10 @@ def main():
                                             recovery_pending = False
                                             supervisor.execute = True
                                             set_enabled(db, True)
+                                            try:
+                                                clear_confirmation(args.db)
+                                            except OSError:
+                                                log.warning('Expired recovery confirmation will be ignored')
                                             print('PRODUCTION: RECORDING RESUMED', flush=True)
                                         else:
                                             recovery_uncertain = True

@@ -73,7 +73,7 @@ def recovery_details(db):
              'worker_end_recorded':row[7] is not None}
             for row in db.execute(OLD_ROWS).fetchall()]
 
-def recover(db):
+def recover(db, db_path=None):
     """Only called after a successful live poll and persisted history sync.
     A stale heartbeat alone is NOT evidence that a worker stopped. Operator
     confirmation must be bound to the exact run, or its end must be persisted.
@@ -96,7 +96,7 @@ def recover(db):
     if remote != local:
         return 'remote_state_changed_restart_required'
     if ended is None:
-        if os.getenv('STREAMCLIPPER_RECOVER_JOB','').strip()!=recovery_key(row):
+        if db_path is None or not confirmation_matches(db_path, recovery_key(row), heartbeat):
             return 'previous_worker_stop_not_confirmed'
         if age_seconds(heartbeat)<120:
             return 'previous_worker_heartbeat_too_recent'
@@ -160,3 +160,129 @@ def read_state(db_path, process=None, launched_at=None):
     if launched_at is not None and 0<=time.time()-launched_at<=120:
         return {'phase':'starting','recording':'blocked','unresolved':[], 'reason':'initializing'}
     return {'phase':'stale','recording':'blocked','unresolved':[], 'reason':'monitor_heartbeat_missing_or_stale'}
+
+
+# Instance-local, short-lived operator confirmation. Never a replacement for
+# verifying that the previous Render instance and its recording worker stopped.
+CONFIRM_TTL = 600
+
+
+def confirmation_path(db_path):
+    return Path(str(db_path) + '.recovery-confirm.json')
+
+
+def clear_confirmation(db_path):
+    confirmation_path(db_path).unlink(missing_ok=True)
+
+
+def read_confirmation(db_path):
+    try:
+        data = json.loads(confirmation_path(db_path).read_text(encoding='utf-8'))
+        age = time.time() - float(data['confirmed_at'])
+        if 0 <= age <= CONFIRM_TTL and isinstance(data['key'], str) and isinstance(data['worker_heartbeat'], str):
+            return data
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
+    return None
+
+
+def confirmation_matches(db_path, key, heartbeat):
+    data = read_confirmation(db_path)
+    return bool(data and data['key'] == key and data['worker_heartbeat'] == heartbeat)
+
+
+def confirmable_run(state):
+    if state.get('phase') != 'running' or state.get('recording') != 'blocked':
+        return None
+    if state.get('reason') not in ('previous_worker_stop_not_confirmed', 'previous_worker_heartbeat_too_recent', 'awaiting_confirmation'):
+        return None
+    unresolved = state.get('unresolved') or []
+    if len(unresolved) != 1:
+        return None
+    run = unresolved[0]
+    if run.get('worker_end_recorded') or not run.get('key') or age_seconds(run.get('worker_heartbeat')) < 120:
+        return None
+    return run
+
+
+def store_confirmation(db_path, state, key):
+    import tempfile
+    import hmac
+    run = confirmable_run(state)
+    if run is None or not hmac.compare_digest(key.encode('utf-8'), run['key'].encode('utf-8')):
+        return False
+    target = confirmation_path(db_path)
+    data = {'key': run['key'], 'worker_heartbeat': run['worker_heartbeat'], 'confirmed_at': time.time()}
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=target.parent, prefix=target.name+'.', delete=False) as f:
+            tmp = Path(f.name)
+            json.dump(data, f)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.replace(target)
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
+    return True
+
+
+def recovery_form(db_path, state, csrf):
+    from html import escape
+    run = confirmable_run(state)
+    if run is None:
+        return b''
+    key = run['key']
+    if confirmation_matches(db_path, key, run['worker_heartbeat']):
+        return ('<section><h2>Auftragswiederherstellung</h2><p>Bestätigung eingegangen. '
+                'StreamClipper prüft den Auftrag beim nächsten erfolgreichen Live- und Datenbank-Prüfzyklus. '
+                'Die Aufnahme bleibt bis dahin gesperrt.</p></section>').encode('utf-8')
+    return (f'<section><h2>Auftragswiederherstellung</h2>'
+            f'<p>Unterbrochener Auftrag #{escape(str(run["job_id"]))} – {escape(run["channel"])}</p>'
+            '<p class="note">Nur bestätigen, wenn die vorherige Render-Instanz einschließlich ihres '
+            'Aufnahmeprozesses nachweislich beendet ist. Ein altes Worker-Signal allein genügt nicht.</p>'
+            '<form method="post" action="/recover-recording">'
+            f'<input type="hidden" name="key" value="{escape(key, quote=True)}">'
+            f'<input type="hidden" name="csrf" value="{escape(csrf, quote=True)}">'
+            '<p><label><input type="checkbox" name="stopped" value="yes" required> '
+            'Ich habe das Ende der vorherigen Instanz und ihrer Aufnahme überprüft.</label></p>'
+            '<button type="submit">Aufnahme sicher wiederherstellen</button></form></section>').encode('utf-8')
+
+
+def handle_recovery_request(handler, db_path, state_reader, csrf):
+    """Called only behind the existing authenticated dashboard POST handler."""
+    import hmac
+    from urllib.parse import parse_qs
+    hostname = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
+    if not hostname or handler.headers.get('Origin') != 'https://' + hostname:
+        return handler.respond(403, b'Invalid origin')
+    if handler.headers.get('Transfer-Encoding'):
+        return handler.respond(400, b'Invalid request')
+    if handler.headers.get('Content-Type', '').split(';', 1)[0].strip().lower() != 'application/x-www-form-urlencoded':
+        return handler.respond(415, b'Invalid content type')
+    try:
+        size = int(handler.headers.get('Content-Length', '0'))
+        if not 1 <= size <= 2048:
+            raise ValueError('Invalid size')
+        handler.connection.settimeout(15)
+        body = handler.rfile.read(size)
+        if len(body) != size:
+            raise ValueError('Incomplete body')
+        fields = parse_qs(body.decode('utf-8'), strict_parsing=True, max_num_fields=3, keep_blank_values=True)
+        if set(fields) != {'key', 'csrf', 'stopped'} or any(len(v) != 1 for v in fields.values()):
+            raise ValueError('Invalid fields')
+    except (ValueError, UnicodeError, OSError):
+        return handler.respond(400, b'Invalid confirmation request')
+    if not hmac.compare_digest(fields['csrf'][0].encode('utf-8'), csrf.encode('utf-8')) or fields['stopped'] != ['yes']:
+        return handler.respond(403, b'Confirmation required')
+    try:
+        if not store_confirmation(db_path, state_reader(), fields['key'][0]):
+            return handler.respond(409, b'Recovery state changed or not eligible; reload dashboard')
+    except OSError:
+        return handler.respond(503, b'Confirmation unavailable')
+    print('PRODUCTION: DASHBOARD RECOVERY CONFIRMED', fields['key'][0], flush=True)
+    handler.send_response(303)
+    handler.send_header('Location', '/')
+    handler.send_header('Content-Length', '0')
+    handler.send_header('Cache-Control', 'no-store')
+    handler.end_headers()
