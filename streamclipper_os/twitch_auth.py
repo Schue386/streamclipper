@@ -4,6 +4,7 @@ import json
 import time
 import urllib.parse
 import urllib.request
+import urllib.error
 import threading
 
 _lock = threading.Lock()
@@ -13,8 +14,8 @@ _expires = 0.0
 def get_token(force=False):
     global _token, _expires
     with _lock:
-        client_id = os.getenv("TWITCH_CLIENT_ID", "")
-        secret = os.getenv("TWITCH_CLIENT_SECRET", "")
+        client_id = os.getenv("TWITCH_CLIENT_ID", "").strip()
+        secret = os.getenv("TWITCH_CLIENT_SECRET", "").strip()
         if not client_id or not secret:
             raise ValueError("Twitch credentials missing")
 
@@ -33,8 +34,30 @@ def get_token(force=False):
             method="POST"
         )
 
-        with urllib.request.urlopen(request, timeout=20) as response:
-            payload = json.load(response)
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                payload = json.load(response)
+        except urllib.error.HTTPError as exc:
+            try:
+                message = str(json.loads(
+                    exc.read()
+                ).get("message","Unknown error"))
+
+                for value in (client_id,secret):
+                    if value:
+                        message = message.replace(
+                            value,"[REDACTED]"
+                        )
+
+            except Exception:
+                message = "No details available"
+
+            print(
+                "TWITCH AUTH ERROR:",
+                exc.code,message[:200],
+                flush=True
+            )
+            raise
 
         token = payload["access_token"]
         lifetime = int(payload["expires_in"])
