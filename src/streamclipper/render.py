@@ -16,7 +16,7 @@ from streamclipper.effects import ENHANCE_MIX, effects_of, perspective_filter, z
 from streamclipper.env import _first_line, ttf_full_name
 from streamclipper.layout import apply_caption_anchor, layout_boxes, probe_video
 from streamclipper.paths import TEMPLATE_DIR
-from streamclipper.util import ToolError, fwd, run_cmd
+from streamclipper.util import ToolError, fwd, run_cmd, render_low_memory_worker
 
 RENDER_FPS = 30
 RNNOISE_MODEL = Path(__file__).resolve().parent / "data" / "models" / "bd.rnnn"  # RNNoise-nu beguiling-drafter
@@ -649,7 +649,7 @@ def render_plan_mp4(plan: dict, out_mp4: Path) -> Path:
             "-profile:v",
             "high",
             "-preset",
-            "medium",
+            "veryfast" if render_low_memory_worker() else "medium",
             "-crf",
             "20",
             "-maxrate",

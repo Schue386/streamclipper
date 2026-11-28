@@ -268,7 +268,7 @@ def main():
                 else:
                     set_enabled(db, True)
                     print("PRODUCTION: ENABLED", flush=True)
-                print("PRODUCTION: v60.6.5 PILOT recording_limit_min=30 worker_timeout_s=2700 workers=1 sequential_cycles=1 dashboard_recovery=1", flush=True)
+                print("PRODUCTION: v60.6.6 PILOT recording_limit_min=30 worker_timeout_s=2700 workers=1 sequential_cycles=1 dashboard_recovery=1 low_memory_profile=1", flush=True)
 
         recovery_pending = bool(args.persistent_history and args.execute and active)
         recovery_uncertain = False

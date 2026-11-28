@@ -2,6 +2,7 @@
 
 import hashlib
 import importlib.util
+import os
 import re
 import shutil
 import subprocess
@@ -62,9 +63,45 @@ def require_tool(name: str) -> str:
     return path
 
 
+def render_low_memory_worker():
+    # Existing Render flags only; worker is the session/process-group leader.
+    return bool(sys.platform.startswith("linux") and os.getenv("RENDER_EXTERNAL_HOSTNAME")
+                and os.getenv("STREAMCLIPPER_PRODUCTION") == "1"
+                and os.getpid() == os.getpgrp())
+
+
+def render_budget_available():
+    if not render_low_memory_worker():
+        return True
+    root = Path("/sys/fs/cgroup")
+    try:
+        current = int((root / "memory.current").read_text().strip())
+        stat = dict(line.split() for line in (root / "memory.stat").read_text().splitlines())
+        inactive = int(stat.get("inactive_file", "0"))
+        raw_limit = (root / "memory.max").read_text().strip()
+        limit = min(int(raw_limit), 512*1024**2) if raw_limit != "max" else 512*1024**2
+        return limit > 0 and max(0, current - max(0, inactive)) < limit * (300/512)
+    except (OSError, ValueError):
+        return False
+
+
+def low_memory_ffmpeg(cmd):
+    if not render_low_memory_worker() or Path(cmd[0]).name != "ffmpeg" or "-i" not in cmd:
+        return cmd
+    result = [cmd[0], "-filter_threads", "1", "-filter_complex_threads", "1"]
+    for arg in cmd[1:-1]:
+        if arg == "-i":
+            result.extend(["-threads", "1"])
+        result.append(arg)
+    result.extend(["-threads", "1", cmd[-1]])
+    return result
+
+
 def own_group_flags() -> dict:
     """Popen flags for a child in its own process group: a console Ctrl+C (Ctrl+Break) or a terminal
     SIGINT to the foreground group reaches only streamclipper, which then stops in an orderly way."""
+    if render_low_memory_worker():
+        return {}
     if sys.platform == "win32":
         return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
     return {"start_new_session": True}
@@ -84,7 +121,7 @@ def run_cmd(
     cmd: list, what: str, cwd=None, capture: bool = True, binary: bool = False, check: bool = True, hint: str = ""
 ) -> subprocess.CompletedProcess:
     """Run a command with UTF-8 decoding. On failure raise ToolError with the last stderr lines."""
-    cmd = [str(c) for c in cmd]
+    cmd = low_memory_ffmpeg([str(c) for c in cmd])
     kw = {"cwd": str(cwd) if cwd else None}
     if _OWN_GROUP:
         kw.update(own_group_flags())

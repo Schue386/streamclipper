@@ -15,7 +15,7 @@ from collections import deque
 from pathlib import Path
 from urllib.parse import urlparse
 
-from streamclipper.util import TOOL_HINTS, ToolError, own_group_flags, ytdlp_cmd
+from streamclipper.util import TOOL_HINTS, ToolError, own_group_flags, ytdlp_cmd, render_low_memory_worker, low_memory_ffmpeg
 
 KINDS = ("twitch", "youtube", "kick", "hls", "file")
 SEGMENT_S = 10
@@ -119,9 +119,10 @@ def pipeline_cmds(kind: str, url: str, csv_path: Path, buffer_dir: Path, start_n
     if kind == "file":
         return [ff + ["-re", "-i", str(url)] + seg]
     if kind == "hls" or hls_url:
-        return [ff + ["-i", hls_url or url] + seg]
-    sl = streamlink_cmd() + ["--stdout", "--loglevel", "warning", "--stream-sorting-excludes", ">1080p", url, "best"]
-    return [sl, ff + ["-i", "pipe:0"] + seg]
+        return [low_memory_ffmpeg(ff + ["-i", hls_url or url] + seg)]
+    cap = ">720p" if render_low_memory_worker() else ">1080p"
+    sl = streamlink_cmd() + ["--stdout", "--loglevel", "warning", "--stream-sorting-excludes", cap, url, "best"]
+    return [sl, low_memory_ffmpeg(ff + ["-i", "pipe:0"] + seg)]
 
 
 def is_offline(kind: str, url: str) -> bool:
@@ -146,7 +147,7 @@ def is_offline(kind: str, url: str) -> bool:
 def ytdlp_hls(url: str) -> str:
     """Direct HLS URL of a live stream via yt-dlp -g (fallback when streamlink fails). Never printed."""
     res = subprocess.run(
-        ytdlp_cmd() + ["-g", "-f", "best[height<=1080]", url],
+        ytdlp_cmd() + ["-g", "-f", "best[height<=720]" if render_low_memory_worker() else "best[height<=1080]", url],
         capture_output=True,
         text=True,
         encoding="utf-8",

@@ -12,7 +12,7 @@ from streamclipper.gate import render_and_gate
 from streamclipper.live.engine import shift_clip
 from streamclipper.live.notify import send_clip_alert
 from streamclipper.story import suggest_hook
-from streamclipper.util import SkipClip, ToolError, fwd
+from streamclipper.util import SkipClip, ToolError, fwd, render_budget_available
 
 
 class Worker:
@@ -67,6 +67,18 @@ class Worker:
     def _job_and_cleanup(self, moment, window: Path, t0: float, t1: float, payoff_wall: float):
         self._last_plan, self._last_ok = None, False
         try:
+            # Keep ingest independent. Wait only in the render thread, not in the ring producer.
+            if not render_budget_available():
+                print("RESOURCE: CLIP RENDER DEFERRED", flush=True)
+                deadline = time.monotonic() + 60
+                while not moment.cancelled and time.monotonic() < deadline and not render_budget_available():
+                    time.sleep(2)
+                if moment.cancelled:
+                    return None
+                if not render_budget_available():
+                    self.failed += 1
+                    print("RESOURCE: CLIP RENDER SKIPPED; window retained locally", flush=True)
+                    return None
             return self._job(moment, window, t0, t1, payoff_wall)
         finally:
             self._release_window(window, self._last_plan, self._last_ok or moment.cancelled)

@@ -5,6 +5,7 @@ from runtime_recovery import (read_state, heartbeat_path, clear_confirmation,
                               recovery_form, handle_recovery_request)
 import secrets
 from pathlib import Path
+from resource_guard import start_metrics, read_metrics, display
 from http.server import ThreadingHTTPServer
 from dashboard import make_handler, snapshot, render
 from streamer_http import handle_streamers
@@ -102,7 +103,7 @@ def handler(db, password, production=False, monitoring=None, launched_at=None):
                     try:
                         with open('/sys/fs/cgroup/'+key) as f: memory[key]=f.read().strip()
                     except OSError: memory[key]=None
-                return self.respond(200,json.dumps({'memory':memory,'disk_free':shutil.disk_usage('/tmp').free,'storage':'ephemeral','recording':None if production else False,'production_enabled':production}).encode(),'application/json')
+                return self.respond(200,json.dumps({'memory':memory,'disk_free':shutil.disk_usage('/tmp').free,'storage':'ephemeral','recording':None if production else False,'production_enabled':production,'telemetry':read_metrics(db)}).encode(),'application/json')
             if self.path!='/': return self.respond(404,b'Not found')
             data = snapshot(db)
             from source_rights import approved_channels
@@ -126,6 +127,9 @@ def handler(db, password, production=False, monitoring=None, launched_at=None):
             except StoreError:
                 message += " | Aufnahmefreigaben nicht abrufbar"
 
+            message += ' | ' + display(db)
+            if production:
+                message += ' | RAM-Sparprofil: Audio-Hoehepunkte ohne Live-ASR'
             page=render(data, message).replace(b'Lokales Dashboard \xc2\xb7 keine Cloud-Verbindung',b'Render Cloud - fluechtiger Speicher').replace(b'<form method="post" action="/control"',b'<form hidden method="post" action="/control"')
             page=page.replace(b'</body>',b'<p><a href="/pilot">Pilot-Ergebnis</a> | <a href="/clip.mp4">Clip herunterladen</a> | <a href="/resources">Ressourcen</a></p><form method="post" action="/pilot"><button>75-Sekunden-Test starten</button></form></body>')
             if production:
@@ -219,6 +223,7 @@ if __name__=='__main__':
     heartbeat_path('/tmp/streamclipper.sqlite3').unlink(missing_ok=True)
     clear_confirmation('/tmp/streamclipper.sqlite3')
     launched_at = time.time()
+    start_metrics('/tmp/streamclipper.sqlite3', production)
     monitoring = subprocess.Popen(monitoring_command(production))
     with ThreadingHTTPServer(('0.0.0.0',int(os.environ.get('PORT','10000'))),handler('/tmp/streamclipper.sqlite3',os.environ['DASHBOARD_PASSWORD'],production,monitoring,launched_at)) as server:
         server.serve_forever()

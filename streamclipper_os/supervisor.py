@@ -18,6 +18,7 @@ from stream_monitor import connect, now
 from clip_jobs import prepare, plan_next
 from clip_importer import import_completed
 from control import enabled as control_enabled
+from resource_guard import cloud_profile, may_launch, start_worker_watch
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS worker_runs (
@@ -278,9 +279,12 @@ class Supervisor:
         for job_id,(proc,deadline) in list(self.active.items()):
             code=proc.poll()
             if code is None and time.monotonic()>=deadline:
-                proc.terminate()
-                try:proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:proc.kill();proc.wait(timeout=10)
+                if self.persistent_jobs and cloud_profile():
+                    self.stop_recording(proc)
+                else:
+                    proc.terminate()
+                    try:proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:proc.kill();proc.wait(timeout=10)
                 code=proc.returncode
                 error='Clipping timeout exceeded'
             else:
@@ -288,6 +292,8 @@ class Supervisor:
             if code is None:
                 with self.db:self.db.execute('UPDATE worker_runs SET heartbeat_at=? WHERE job_id=?',(now(),job_id))
                 continue
+            if getattr(proc, '_sc_memory_stop', False):
+                error = 'RAM-Schutz: Aufnahmegruppe notgestoppt'
             status='completed' if code==0 and error is None else 'failed'
             live_result = None
             if self.persistent_jobs:
@@ -310,6 +316,7 @@ class Supervisor:
             del self.active[job_id]
         imported=import_completed(self.db) if completed else {'imported':0}
         launched=[]
+        memory_blocked = bool(self.persistent_jobs and cloud_profile() and not may_launch())
         storage_blocked=False
         if self.execute and control_enabled(self.db) and os.environ.get("STREAMCLIPPER_MIN_FREE_GIB"):
             try:
@@ -321,6 +328,7 @@ class Supervisor:
             self.execute
             and control_enabled(self.db)
             and not storage_blocked
+            and not memory_blocked
             and not self.archive_busy
             and rights_ok
         ):
@@ -426,7 +434,7 @@ class Supervisor:
                                 "--buffer-min", "5",
                                 "--max-clips-per-hour", "2",
                                 "--ratio", "9:16",
-                                "--asr", "full",
+                                "--asr", "none" if cloud_profile() else "full",
                                 "--device", "cpu",
                                 "--whisper-model",
                                 "/opt/whisper-tiny"
@@ -449,16 +457,21 @@ class Supervisor:
                     self.db.execute('INSERT OR REPLACE INTO worker_runs(job_id,pid,started_at,heartbeat_at,deadline_at,log_path) VALUES(?,?,?,?,?,?)',
                                     (job_id,getattr(proc,'pid',None),now(),now(),time.time()+self.timeout,str(logpath)))
                 self.active[job_id]=(proc,deadline)
+                if self.persistent_jobs and cloud_profile():
+                    start_worker_watch(proc, job_id)
                 launched.append(job_id)
-        return {'enabled':control_enabled(self.db),'active':len(self.active),'launched':launched,'finished':stopped+completed,'imports':imported,'storage_blocked':storage_blocked}
+        return {'enabled':control_enabled(self.db),'active':len(self.active),'launched':launched,'finished':stopped+completed,'imports':imported,'storage_blocked':storage_blocked,'memory_blocked':memory_blocked}
 
     def shutdown(self):
         """Graceful shutdown; do not abandon live children without recording status."""
         for job_id,(proc,_) in list(self.active.items()):
             if proc.poll() is None:
-                proc.terminate()
-                try:proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:proc.kill();proc.wait(timeout=10)
+                if self.persistent_jobs and cloud_profile():
+                    self.stop_recording(proc)
+                else:
+                    proc.terminate()
+                    try:proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:proc.kill();proc.wait(timeout=10)
             with self.db:
                 self.db.execute('UPDATE clip_jobs SET status=?,error_message=?,finished_at=? WHERE id=?',
                                 ('failed','Supervisor stopped; inspect output before retry',now(),job_id))
