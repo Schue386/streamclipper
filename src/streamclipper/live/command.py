@@ -47,6 +47,39 @@ class LiveRun:
         self.stopping = False
         self.t_start = time.time()
         self.next_status = 60.0
+        self.progress_phase = "starting"
+        self.progress_written = 0.0
+        self.last_analysis_at = None
+
+    def write_progress(self, phase=None, force=False):
+        """Best-effort telemetry only; never stop a live run because diagnostics fail."""
+        now = time.time()
+        if phase is not None:
+            self.progress_phase = phase
+        if not force and now - self.progress_written < 10:
+            return
+        self.progress_written = now
+        try:
+            data = {
+                "updated_at": now,
+                "phase": self.progress_phase,
+                "buffered_s": round(self.ring.end, 1),
+                "analyzed_s": round(self.engine.end, 1),
+                "segments": len(self.ring.segments),
+                "analyzed_segments": self.done_segs,
+                "judged_moments": len(self.engine.judged),
+                "selected_moments": len(self.engine.moments),
+                "clips": len(self.worker.clips),
+                "failed_or_skipped": self.worker.failed,
+                "gate_pass": sum(1 for x in self.worker.extra if x.get("gate") is True),
+                "reconnects": self.ingest.reconnects,
+                "last_segment_at": self.ring.last_wall(),
+                "last_analysis_at": self.last_analysis_at,
+            }
+            write_json_atomic(self.out / "live_progress.json", data)
+        except Exception as exc:
+            # Do not log paths, stream URLs or exception payloads.
+            print("Live diagnostics unavailable:", type(exc).__name__)
 
     def check_disk(self) -> float:
         """GB used by the output folder; a warning (at most every 10 min) when it is over --max-disk-gb."""
@@ -69,6 +102,8 @@ class LiveRun:
         for seg in new:
             self.engine.feed(seg)
             self.done_segs += 1
+            self.last_analysis_at = time.time()
+            self.write_progress()
         if new:
             self.emit(self.engine.analyze(self._chat_msgs()))
             self.ring.prune()
@@ -81,6 +116,7 @@ class LiveRun:
                 )
                 if self.max_disk_gb:
                     self.check_disk()
+        self.write_progress()
         return len(new)
 
     def emit(self, ready: list):
@@ -100,7 +136,9 @@ class LiveRun:
             self.worker.submit(moment, path, t0, t1, seg.wall if seg else time.time())
 
     def run(self) -> dict:
+        self.write_progress("starting", force=True)
         self.ingest.start()
+        self.write_progress("recording", force=True)
         if self.chat is not None:
             self.chat.start()
         try:
@@ -108,6 +146,7 @@ class LiveRun:
         except KeyboardInterrupt:
             print("Ctrl+C: stopping the ingest; finishing the buffered segments and the queued renders ...")
             self.stopping = True
+            self.write_progress("stopping", force=True)
             self.ingest.stop()
             self._loop()
         return self.finish()
@@ -123,11 +162,13 @@ class LiveRun:
             if not self.stopping and self.stop_after_s and time.time() - self.t_start >= self.stop_after_s:
                 print(f"Live: --stop-after reached ({self.stop_after_s / 60:g} min); stopping the ingest ...")
                 self.stopping = True
+                self.write_progress("stopping", force=True)
                 self.ingest.stop()
             if not n:
                 time.sleep(POLL_S)
 
     def finish(self) -> dict:
+        self.write_progress("finishing", force=True)
         self.ingest.join(30)
         if self.chat is not None:
             self.chat.stop()
@@ -152,6 +193,7 @@ class LiveRun:
             "gate_pass": sum(1 for x in self.worker.extra if x["gate"]),
         }
         write_json_atomic(self.out / "live_summary.json", summary)
+        self.write_progress("finished", force=True)
         print("LIVE SUMMARY")
         print(
             f"  stream buffered {_mmss(summary['buffered_s'])} in {_mmss(summary['wall_s'])} ({summary['end_reason']})"

@@ -15,6 +15,8 @@ from learning import recommend
 from tiktok_metrics import latest as latest_tiktok
 from tiktok_status import overview
 from clip_catalog import prepare as prepare_catalog, summary
+from job_diagnostics import snapshot as diagnostic_snapshot, render_diagnostics
+import sqlite3
 
 MAX_BODY = 2048
 
@@ -35,6 +37,10 @@ def snapshot(db_path: str) -> dict:
             for jid, channel, state in db.execute(
                 'SELECT id,channel,status FROM clip_jobs ORDER BY id DESC LIMIT 15')
         ]
+        try:
+            result['recording_diagnostics'] = diagnostic_snapshot(db,db_path)
+        except (sqlite3.Error,OSError,ValueError,TypeError):
+            result['recording_diagnostics'] = None
         return result
 
 def render(data: dict, message: str = '') -> bytes:
@@ -52,6 +58,7 @@ def render(data: dict, message: str = '') -> bytes:
     cards = ''.join(f'<article><small>{e(label)}</small><strong>{e(value)}</strong></article>' for label,value in metrics)
     streamers = render_streamers(data["streamers"])
     jobs = ''.join(f'<li>#{e(item["id"])} {e(item["channel"])} – {e(item["status"])}</li>' for item in data['recent_jobs']) or '<li>Keine Aufträge</li>'
+    job_section = render_diagnostics(data.get('recording_diagnostics')) or f'<section><h2>Letzte Aufträge</h2><ul>{jobs}</ul></section>'
     learning_rows = ''.join(f'<li>{e(platform)} / {e(dimension)}: {e(info["preferred"] or "Weitere Daten sammeln")}</li>' for platform, dimensions in data.get('learning',{}).items() for dimension, info in dimensions.items())
     rankings = ''.join(f'<li>{e(x["channel"])} – {e(x["median_views_per_day"])} Aufrufe/Tag (Median), {e(x["samples"])} Clips – {"Priorität prüfen" if x["recommendation"]=="review_priority" else "Weitere Daten sammeln"}</li>' for x in data.get('performance',{}).get('channels',[])[:20]) or '<li>Noch keine vergleichbaren öffentlichen Clips</li>'
     rankings += ''.join(f'<li>TikTok: {e(x["channel"])} – {e(x["median_views_per_day"])} Aufrufe/Tag (Median), {e(x["samples"])} Clips</li>' for x in data.get('tiktok_performance',{}).get('channels',[])[:20])
@@ -72,8 +79,8 @@ ul{{padding-left:22px;line-height:1.9}}.sections{{display:grid;grid-template-col
 <body><main><header><div><h1>StreamClipper OS</h1><p class="note">Lokales Dashboard · keine Cloud-Verbindung</p></div>
 <div><strong class="{'on' if flag else 'off'}">{'Freigegeben' if flag else 'Gestoppt'}</strong>
 <form method="post" action="/control"><input type="hidden" name="action" value="{action}"><button type="submit">{label}</button></form></div></header>
-<p class="note">{e(message)}</p><div class="grid">{cards}</div><div class="sections">
-<section><h2>Streamer</h2>{streamers}</section><section><h2>Letzte Aufträge</h2><ul>{jobs}</ul></section></div>
+<p class="note">{e(message)}</p><div class="grid">{cards}</div>{job_section}<div class="sections">
+<section><h2>Streamer</h2>{streamers}</section></div>
 <section><h2>TikTok-Status</h2><p>Posteingang ist keine öffentliche Veröffentlichung.</p><ul>{tt}</ul></section>
 <section><h2>Erfolgsanalyse</h2><p>Öffentliche Clips, Messalter 1–7 Tage; mindestens 5 Clips für Prioritätsprüfung.</p><ul>{rankings}</ul><h3>Lernstrategie (UTC, Empfehlungen)</h3><ul>{learning_rows}</ul></section>
 <p class="note">Die Freigabe startet keinen Server oder Supervisor. Der Supervisor muss separat mit --execute laufen.

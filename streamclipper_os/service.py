@@ -20,6 +20,7 @@ from supervisor import Supervisor
 from control import enabled as control_enabled
 from runtime_recovery import recover, recovery_details, write_state, clear_confirmation
 from turso_store import StoreError
+from job_diagnostics import Diagnostics
 
 log = logging.getLogger('streamclipper.service')
 
@@ -268,7 +269,7 @@ def main():
                 else:
                     set_enabled(db, True)
                     print("PRODUCTION: ENABLED", flush=True)
-                print("PRODUCTION: v60.6.6 PILOT recording_limit_min=30 worker_timeout_s=2700 workers=1 sequential_cycles=1 dashboard_recovery=1 low_memory_profile=1", flush=True)
+                print("PRODUCTION: v60.6.7 PILOT recording_limit_min=30 worker_timeout_s=2700 workers=1 sequential_cycles=1 dashboard_recovery=1 low_memory_profile=1 job_diagnostics=1", flush=True)
 
         recovery_pending = bool(args.persistent_history and args.execute and active)
         recovery_uncertain = False
@@ -278,6 +279,7 @@ def main():
 
         next_poll=0.0
         archive_thread = None
+        diagnostics = Diagnostics(args.db) if args.persistent_history and args.execute else None
         try:
             while True:
                 current=time.monotonic()
@@ -289,6 +291,13 @@ def main():
                 )
 
                 result=cycle(db,supervisor,demo_file=args.demo_file,poll=do_poll,upload=False)
+                # Capture final evidence before a follow-up clears the old output path.
+                if diagnostics is not None:
+                    try:
+                        diagnostics.tick(db, active=tuple(supervisor.active),
+                                         finished=bool(result.get('supervisor',{}).get('finished')))
+                    except Exception as exc:
+                        log.warning('Recording diagnostics unavailable: %s',type(exc).__name__)
                 if do_poll and args.persistent_history:
                     try:
                         saved = history.save_streams(db)
