@@ -164,6 +164,7 @@ class Supervisor:
         self.reservation_owner = uuid.uuid4().hex
         self.persistent_jobs = False
         self.archive_busy = False
+        self.maintenance_blocked = False
         initialize(db)
 
     def stop_recording(self, proc):
@@ -330,6 +331,7 @@ class Supervisor:
             and not storage_blocked
             and not memory_blocked
             and not self.archive_busy
+            and not self.maintenance_blocked
             and rights_ok
         ):
             while len(self.active)<self.max_workers:

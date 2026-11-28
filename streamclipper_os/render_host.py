@@ -9,6 +9,7 @@ from resource_guard import start_metrics, read_metrics, display
 from http.server import ThreadingHTTPServer
 from dashboard import make_handler, snapshot, render
 from streamer_http import handle_streamers
+from maintenance import form as maintenance_form, handle as handle_maintenance
 
 def monitoring_command(production=False):
     command = [
@@ -127,20 +128,36 @@ def handler(db, password, production=False, monitoring=None, launched_at=None):
             except StoreError:
                 message += " | Aufnahmefreigaben nicht abrufbar"
 
+            # The restored running row is not evidence that a worker is alive.
+            unresolved_ids = {x['job_id'] for x in state.get('unresolved',[])}
+            for item in (data.get('recording_diagnostics') or {}).get('current',[]):
+                if item['status']=='running':
+                    if item['id'] in unresolved_ids:
+                        item['worker_unconfirmed']='Wiederherstellung offen'
+                    elif state.get('phase')!='running':
+                        item['worker_unconfirmed']='Überwachungsstatus unbestätigt'
+            if state.get('phase')!='running':
+                data['active_jobs']='–'
+            elif unresolved_ids:
+                data['active_jobs']=max(0,data['active_jobs']-len(unresolved_ids))
             message += ' | ' + display(db)
             if production:
                 message += ' | RAM-Sparprofil: Audio-Hoehepunkte ohne Live-ASR'
             page=render(data, message).replace(b'Lokales Dashboard \xc2\xb7 keine Cloud-Verbindung',b'Render Cloud - fluechtiger Speicher').replace(b'<form method="post" action="/control"',b'<form hidden method="post" action="/control"')
             page=page.replace(b'</body>',b'<p><a href="/pilot">Pilot-Ergebnis</a> | <a href="/clip.mp4">Clip herunterladen</a> | <a href="/resources">Ressourcen</a></p><form method="post" action="/pilot"><button>75-Sekunden-Test starten</button></form></body>')
             if production:
+                page = page.replace(b'<div class="grid">', maintenance_form(db,state,recovery_csrf)+b'<div class="grid">',1)
                 form = recovery_form(db, state, recovery_csrf)
                 if form:
                     page = page.replace(b'<div class="grid">', form+b'<div class="grid">', 1)
             return self.respond(200,page)
         def do_POST(self):
-            if self.path not in ('/pilot','/video-test','/streamers','/recover-recording'): return self.respond(405,b'Read-only pilot')
+            if self.path not in ('/pilot','/video-test','/streamers','/recover-recording','/maintenance'): return self.respond(405,b'Read-only pilot')
             if not hmac.compare_digest(self.headers.get('Authorization','').encode(),expected.encode()): return self.respond(401,b'Unauthorized')
             if self.path=='/streamers': return handle_streamers(self, db)
+            if self.path=='/maintenance':
+                if not production: return self.respond(409,b'Production disabled')
+                return handle_maintenance(self,db,monitor_state,recovery_csrf)
             if self.path=='/recover-recording':
                 if not production: return self.respond(409,b'Production disabled')
                 return handle_recovery_request(self, db, monitor_state, recovery_csrf)

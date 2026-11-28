@@ -21,6 +21,7 @@ from control import enabled as control_enabled
 from runtime_recovery import recover, recovery_details, write_state, clear_confirmation
 from turso_store import StoreError
 from job_diagnostics import Diagnostics
+from maintenance import Maintenance
 
 log = logging.getLogger('streamclipper.service')
 
@@ -96,7 +97,7 @@ def queue_production(db, supervisor, result):
     if not supervisor.persistent_jobs:
         return 0
 
-    if not supervisor.execute or not control_enabled(db):
+    if not supervisor.execute or supervisor.maintenance_blocked or not control_enabled(db):
         return 0
 
     if os.getenv("STREAMCLIPPER_DATA_SYNC") != "1":
@@ -269,7 +270,7 @@ def main():
                 else:
                     set_enabled(db, True)
                     print("PRODUCTION: ENABLED", flush=True)
-                print("PRODUCTION: v60.7.0 PILOT recording_limit_min=30 worker_timeout_s=2700 workers=1 sequential_cycles=1 dashboard_recovery=1 low_memory_profile=1 job_diagnostics=1 shared_production_slot=1", flush=True)
+                print("PRODUCTION: v60.7.1 PILOT recording_limit_min=30 worker_timeout_s=2700 workers=1 sequential_cycles=1 dashboard_recovery=1 low_memory_profile=1 job_diagnostics=1 shared_production_slot=1 maintenance=1", flush=True)
 
         recovery_pending = bool(args.persistent_history and args.execute and active)
         recovery_uncertain = False
@@ -280,6 +281,7 @@ def main():
         next_poll=0.0
         archive_thread = None
         diagnostics = Diagnostics(args.db) if args.persistent_history and args.execute else None
+        maintenance = Maintenance(args.db, enabled=bool(args.persistent_history and args.execute))
         try:
             while True:
                 current=time.monotonic()
@@ -290,6 +292,7 @@ def main():
                     and archive_thread.is_alive()
                 )
 
+                maintenance.before(supervisor,recovery_pending)
                 result=cycle(db,supervisor,demo_file=args.demo_file,poll=do_poll,upload=False)
                 # Capture final evidence before a follow-up clears the old output path.
                 if diagnostics is not None:
@@ -379,6 +382,7 @@ def main():
                     and os.getenv("STREAMCLIPPER_V58_TEST") != "1"
                     and not os.getenv("STREAMCLIPPER_VERIFY_CLIP_ID")
                     and not supervisor.active
+                    and not maintenance.ready
                     and result.get("jobs", {}).get("status") == "ok"
                     and result.get("catalog", {}).get("status") == "ok"
                 ):
@@ -390,9 +394,11 @@ def main():
                         )
                         archive_thread.start()
 
+                maintenance.after(db,supervisor,bool(archive_thread and archive_thread.is_alive()),result,diagnostics,recovery_pending)
+                reason = recovery_reason if recovery_pending or not maintenance.blocked else ('maintenance_ready' if maintenance.ready else 'maintenance_draining')
                 write_state(args.db,'running',
-                    'blocked' if recovery_pending or (args.execute and not supervisor.execute) else ('enabled' if supervisor.execute and control_enabled(db) else 'disabled'),
-                    recovery_details(db) if recovery_pending else (), recovery_reason)
+                    'blocked' if recovery_pending or maintenance.blocked or (args.execute and not supervisor.execute) else ('enabled' if supervisor.execute and control_enabled(db) else 'disabled'),
+                    recovery_details(db) if recovery_pending else (), reason)
                 if do_poll:next_poll=current+args.interval
                 print(json.dumps(result,ensure_ascii=False),flush=True)
                 if args.once:break

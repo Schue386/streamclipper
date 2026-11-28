@@ -220,7 +220,13 @@ def render_diagnostics(data,now=None):
     history_keys={(r['id'],r['attempt']) for r in history}
     for j in data.get('current',[]):
         p=j.get('progress',{}); st=j['status']; started=epoch(j.get('started_at')); ended=epoch(j.get('finished_at'))
+        hb=epoch(j.get('heartbeat_at'))
+        unconfirmed=j.get('worker_unconfirmed')
+        if st=='running' and not unconfirmed and (hb is None or now-hb>90 or hb>now+5):
+            unconfirmed='Worker-Status unbestätigt'
         elapsed=(ended-started if ended is not None else now-started) if started is not None and (st=='running' or ended is not None) else None
+        if st=='running' and unconfirmed:
+            elapsed=hb-started if hb is not None and started is not None and hb>=started else None
         seen=(j['id'],j['attempt']) in history_keys
         count=counts.get(str(j['id']))
         if count is not None or data.get('remote_at') is not None:
@@ -229,9 +235,10 @@ def render_diagnostics(data,now=None):
         if st=='running' and p.get('updated_at') is not None and now-p['updated_at']>90:
             phase+=' · Fortschrittsmeldung älter als 90 Sek.'
         if st!='running': phase=label(st)
+        elif unconfirmed: phase=unconfirmed+' · letzter bestätigter Worker-Stand'
         ram=p.get('working_sample_peak_bytes')
         fields=[('Zyklus',j['attempt'] or '–'),('Abgeschlossene Zyklen (Turso-Stand)',count),('Start (MEZ/MESZ)',date(j.get('started_at'))),
-            ('Laufzeit des Auftrags',duration(elapsed)),('Phase',phase),('Worker-Heartbeat',date(j.get('heartbeat_at'))),
+            ('Laufzeit bis letztem Heartbeat' if st=='running' and unconfirmed else 'Laufzeit des Auftrags',duration(elapsed)),('Phase',phase),('Worker-Heartbeat',date(j.get('heartbeat_at'))),
             ('Worker-Deadline',date(j.get('deadline_at'))),('Erfasste Mediendauer',duration(p.get('buffered_s'))),
             ('Analysierte Mediendauer',duration(p.get('analyzed_s'))),('Erfasste / analysierte Segmente',f"{p.get('segments','–')} / {p.get('analyzed_segments','–')}"),
             ('Bewertete / ausgewählte Momente',f"{p.get('judged_moments','–')} / {p.get('selected_moments','–')}"),
@@ -243,7 +250,7 @@ def render_diagnostics(data,now=None):
             ('Render-Freigabe nicht erhalten (lokales Fenster)',p.get('production_deferred')),
             ('Wiederanlauf-Hinweis' if st in ('running','queued') and j.get('error')=='Previous recording interrupted; stop confirmed' else 'Fehler',j.get('error')),('Exit-Code',j.get('exit_code'))]
         content=''.join(line(a,b) for a,b in fields)
-        heading=escape(f"#{j['id']} – {j['channel']} · {label(st)}",quote=True)
+        heading=escape(f"#{j['id']} – {j['channel']} · {unconfirmed if st=='running' and unconfirmed else label(st)}",quote=True)
         h.append(f'<details {"open" if st=="running" else ""} style="margin:10px 0;padding:12px;border:1px solid #334156;border-radius:10px"><summary>{heading}</summary><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px;margin-top:12px;overflow-wrap:anywhere">{content}</div></details>')
     history_html=[]
     for r in history:
