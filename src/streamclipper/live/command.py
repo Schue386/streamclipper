@@ -73,6 +73,9 @@ class LiveRun:
                 "failed_or_skipped": self.worker.failed,
                 "gate_pass": sum(1 for x in self.worker.extra if x.get("gate") is True),
                 "reconnects": self.ingest.reconnects,
+                "production_waiting": getattr(self.worker, "production_waiting", 0),
+                "production_active": getattr(self.worker, "production_active", 0),
+                "production_deferred": getattr(self.worker, "production_deferred", 0),
                 "last_segment_at": self.ring.last_wall(),
                 "last_analysis_at": self.last_analysis_at,
             }

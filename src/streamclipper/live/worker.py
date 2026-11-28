@@ -12,7 +12,8 @@ from streamclipper.gate import render_and_gate
 from streamclipper.live.engine import shift_clip
 from streamclipper.live.notify import send_clip_alert
 from streamclipper.story import suggest_hook
-from streamclipper.util import SkipClip, ToolError, fwd, render_budget_available
+from streamclipper.util import SkipClip, ToolError, fwd, render_budget_available, render_low_memory_worker
+from streamclipper.live.production import ProductionSlot
 
 
 class Worker:
@@ -54,6 +55,9 @@ class Worker:
         self.failed = 0
         self.futures = []
         self.windows_deleted = 0
+        self.production_waiting = 0
+        self.production_active = 0
+        self.production_deferred = 0
         self._win_refs = {}  # window file -> jobs queued on it (a replaced moment can share the file name)
 
     def submit(self, moment, window: Path, t0: float, t1: float, payoff_wall: float):
@@ -67,6 +71,27 @@ class Worker:
     def _job_and_cleanup(self, moment, window: Path, t0: float, t1: float, payoff_wall: float):
         self._last_plan, self._last_ok = None, False
         try:
+            # Shared production admission across capture processes on this instance.
+            # Keep rendering in the owning process group so the existing RAM and rights
+            # stop mechanisms still apply to every subprocess.
+            if render_low_memory_worker():
+                self.production_waiting = 1
+                try:
+                    with ProductionSlot().acquire(moment.clip.get("score", 0), lambda: moment.cancelled) as granted:
+                        self.production_waiting = 0
+                        if moment.cancelled:
+                            return None
+                        if not granted:
+                            self.failed += 1
+                            self.production_deferred += 1
+                            print("PRODUCTION: SLOT UNAVAILABLE; window retained locally", flush=True)
+                            return None
+                        self.production_active = 1
+                        print("PRODUCTION: SHARED SLOT ACQUIRED", flush=True)
+                        return self._job(moment, window, t0, t1, payoff_wall)
+                finally:
+                    self.production_waiting = 0
+                    self.production_active = 0
             # Keep ingest independent. Wait only in the render thread, not in the ring producer.
             if not render_budget_available():
                 print("RESOURCE: CLIP RENDER DEFERRED", flush=True)

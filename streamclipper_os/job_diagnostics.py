@@ -11,7 +11,8 @@ from zoneinfo import ZoneInfo
 
 FIELDS = ('buffered_s','analyzed_s','segments','analyzed_segments','judged_moments',
           'selected_moments','clips','failed_or_skipped','gate_pass','reconnects',
-          'last_segment_at','last_analysis_at','working_sample_peak_bytes')
+          'last_segment_at','last_analysis_at','working_sample_peak_bytes',
+          'production_waiting','production_active','production_deferred')
 PHASES = {'starting','recording','stopping','finishing','finished'}
 CURRENT_SQL = '''SELECT j.id,j.channel,j.status,j.attempts,j.started_at,j.finished_at,
     j.error_message,j.output_dir,w.heartbeat_at,w.deadline_at,w.ended_at,w.exit_code
@@ -238,7 +239,9 @@ def render_diagnostics(data,now=None):
             ('Fehlgeschlagene / übersprungene Clips',p.get('failed_or_skipped')),('Letztes fertiges Segment',date(p.get('last_segment_at'))),
             ('Letzte Segmentanalyse',date(p.get('last_analysis_at'))),('Fortschrittsmeldung',date(p.get('updated_at'))),
             ('Arbeitssatz-Peak (Instanz, Stichprobe im Zyklus)',f'{ram/1048576:.1f} MiB' if ram is not None else '–'),
-            ('Fehler',j.get('error')),('Exit-Code',j.get('exit_code'))]
+            ('Render-Freigabe wartet',p.get('production_waiting')),('Render-Freigabe aktiv',p.get('production_active')),
+            ('Render-Freigabe nicht erhalten (lokales Fenster)',p.get('production_deferred')),
+            ('Wiederanlauf-Hinweis' if st in ('running','queued') and j.get('error')=='Previous recording interrupted; stop confirmed' else 'Fehler',j.get('error')),('Exit-Code',j.get('exit_code'))]
         content=''.join(line(a,b) for a,b in fields)
         heading=escape(f"#{j['id']} – {j['channel']} · {label(st)}",quote=True)
         h.append(f'<details {"open" if st=="running" else ""} style="margin:10px 0;padding:12px;border:1px solid #334156;border-radius:10px"><summary>{heading}</summary><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px;margin-top:12px;overflow-wrap:anywhere">{content}</div></details>')
